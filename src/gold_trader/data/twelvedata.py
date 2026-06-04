@@ -161,3 +161,14 @@ def _normalize_rows(values: list[Any]) -> list[dict[str, Any]]:
     if len(out) >= 2 and out[0]["time"] > out[-1]["time"]:
         out.reverse()
     return out
+
+
+def fetch_candles(
+    timeframe: str,
+    *,
+    symbol: str = "XAUUSD",
+    count: int = 500,
+    repo: Path | None = None,
+) -> list[dict[str, Any]]:
+    """UI-friendly alias (timeframe-first) used by absolute_gold_app."""
+    return fetch_twelvedata_candles(symbol, timeframe, limit=count, repo=repo)

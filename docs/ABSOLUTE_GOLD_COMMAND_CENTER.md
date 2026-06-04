@@ -13,6 +13,14 @@ This package is a production-grade UI overlay for the current Gold Trader backen
 
 ## Render start command
 
+Superseded by the multi-page app:
+
+```bash
+PYTHONPATH=src python3 scripts/render_absolute_gold_app.py
+```
+
+Legacy single-page UI:
+
 ```bash
 PYTHONPATH=src python3 scripts/render_absolute_gold.py
 ```

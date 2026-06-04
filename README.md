@@ -15,7 +15,8 @@ monitoring, research, and operator controls. Cron drives the loop.
 > **Execution geometry:** [docs/IFVG_EXECUTION_GEOMETRY_AUDIT.md](docs/IFVG_EXECUTION_GEOMETRY_AUDIT.md) ·
 > **HTF IFVG reset:** [docs/HTF_IFVG_RESET.md](docs/HTF_IFVG_RESET.md) ·
 > **Full-system IFVG:** [docs/FULL_SYSTEM_IFVG.md](docs/FULL_SYSTEM_IFVG.md) ·
-> **Command center (Render):** [docs/ABSOLUTE_GOLD_COMMAND_CENTER.md](docs/ABSOLUTE_GOLD_COMMAND_CENTER.md)
+> **Command center (Render):** [docs/ABSOLUTE_GOLD_COMMAND_CENTER.md](docs/ABSOLUTE_GOLD_COMMAND_CENTER.md) ·
+> **Multi-page app:** [docs/ABSOLUTE_GOLD_APP.md](docs/ABSOLUTE_GOLD_APP.md)
 
 ---
 
