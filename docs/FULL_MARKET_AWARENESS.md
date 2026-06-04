@@ -44,7 +44,7 @@ logs/cross_market_state.json
 Recommended (React UI + full context scout):
 
 ```bash
-PYTHONPATH=src python3 scripts/render_command_center_v2.py
+PYTHONPATH=src python3 scripts/render_hardened_market_awareness.py
 ```
 
 Python-only UI:

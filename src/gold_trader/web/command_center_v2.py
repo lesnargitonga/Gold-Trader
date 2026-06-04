@@ -158,6 +158,51 @@ def _tf_reads(decision: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+_HARDENED_SCORE_LABELS = {
+    "timeframe_alignment": "Timeframe Alignment",
+    "ifvg_geometry": "IFVG Geometry",
+    "macro_regime": "Macro Regime",
+    "sentiment_gate": "Sentiment Gate",
+    "session_spread": "Session / Spread",
+    "volatility": "Volatility",
+}
+_HARDENED_SCORE_MAX = {
+    "timeframe_alignment": 25,
+    "ifvg_geometry": 20,
+    "macro_regime": 20,
+    "sentiment_gate": 15,
+    "session_spread": 10,
+    "volatility": 10,
+}
+
+
+def _score_decomposition_from_hardened(decision: dict[str, Any]) -> dict[str, Any]:
+    flat = decision.get("score_decomposition")
+    if not isinstance(flat, dict) or "components" in flat:
+        return flat if isinstance(flat, dict) else {}
+    missing = set(decision.get("missing_inputs") or [])
+    maxes = decision.get("score_component_max") if isinstance(decision.get("score_component_max"), dict) else _HARDENED_SCORE_MAX
+    components = []
+    for key, label in _HARDENED_SCORE_LABELS.items():
+        max_v = int(maxes.get(key, _HARDENED_SCORE_MAX[key]))
+        score = int(flat.get(key, 0))
+        components.append(
+            {
+                "key": key,
+                "label": label,
+                "score": score,
+                "max": max_v,
+                "missing": any(key in str(m).lower() or key.replace("_", " ") in str(m).lower() for m in missing),
+            }
+        )
+    return {
+        "components": components,
+        "computed_score": int(decision.get("raw_score_before_penalty") or sum(c["score"] for c in components)),
+        "final_score": int(decision.get("final_score") or 0),
+        "data_quality_penalty": int(decision.get("data_quality_penalty") or 0),
+    }
+
+
 def _score_decomposition(decision: dict[str, Any]) -> dict[str, Any]:
     reads = _tf_reads(decision)
     side = str(decision.get("side") or "none").lower()
@@ -264,19 +309,39 @@ def _normalize_decision(decision: dict[str, Any]) -> dict[str, Any]:
     d["timeframe_reads_ordered"] = reads
     d["timeframe_reads"] = reads
     d["candles_loaded"] = sum(int(r.get("candles") or 0) for r in reads)
-    d["score_decomposition"] = _score_decomposition(d)
-    d["watching_for"] = _watching_for(d)
+
+    flat_score = d.get("score_decomposition")
+    if isinstance(flat_score, dict) and any(k in flat_score for k in _HARDENED_SCORE_LABELS):
+        d["score_decomposition"] = _score_decomposition_from_hardened(d)
+    else:
+        d["score_decomposition"] = _score_decomposition(d)
+
+    if not d.get("watching_for"):
+        d["watching_for"] = _watching_for(d)
+
+    blockers = list(d.get("blockers") or [])
+    for block in d.get("hard_blocks") or []:
+        if block not in blockers:
+            blockers.append(str(block))
+    d["blockers"] = blockers
+
+    if d.get("source_age_seconds") is not None and d.get("_source_age_seconds") is None:
+        d["_source_age_seconds"] = d.get("source_age_seconds")
 
     mc = d.get("market_context") or {}
-    data_issues: list[str] = []
+    data_issues: list[str] = list(d.get("data_issues") or [])
     for msg in mc.get("warnings") or []:
         data_issues.append(str(msg))
     for msg in mc.get("notes") or []:
         s = str(msg)
         if "unavailable" in s.lower() or "unknown" in s.lower():
             data_issues.append(s)
-    penalty = d["score_decomposition"].get("data_quality_penalty", 0)
-    if penalty > 0:
+    for block in d.get("hard_blocks") or []:
+        data_issues.append(str(block))
+    for missing in d.get("missing_inputs") or []:
+        data_issues.append(f"missing input: {missing}")
+    penalty = int(d.get("data_quality_penalty") or d["score_decomposition"].get("data_quality_penalty") or 0)
+    if penalty > 0 and not any("data quality penalty" in x for x in data_issues):
         data_issues.append(f"−{penalty} pts data quality penalty")
     d["data_issues"] = list(dict.fromkeys(data_issues))
 

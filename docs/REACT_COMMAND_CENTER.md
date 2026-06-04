@@ -11,15 +11,15 @@ This patch replaces the long server-rendered command page with a React cockpit s
 - No build step and no Node dependency: React is loaded from CDN, and the Python server serves the app.
 - Render runner that keeps the full-system IFVG loop running in the background.
 
-## Render start command (v2 market cockpit recommended)
+## Render start command (hardened pipeline recommended)
 
 ```bash
-PYTHONPATH=src python3 scripts/render_command_center_v2.py
+PYTHONPATH=src python3 scripts/render_hardened_market_awareness.py
 ```
 
-Older runners (`render_pro_command_center.py`, `render_react_command_center*.py`) delegate to command center v2.
+`render_command_center_v2.py` and older runners delegate to the hardened pipeline.
 
-See [COMMAND_CENTER_V2.md](COMMAND_CENTER_V2.md) for score decomposition, watching-for, and data issues panels.
+See [SYSTEM_HARDENING_V2.md](SYSTEM_HARDENING_V2.md) for calendar fetch, strict grading, and provider health.
 
 ## Required env
 
