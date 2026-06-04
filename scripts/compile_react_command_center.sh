@@ -12,5 +12,6 @@ compile_one() {
   npx --yes esbuild "$src" --loader:.jsx=jsx --format=iife --target=es2020 --outfile="$out"
   echo "compiled $out"
 }
+compile_one pro_command_center
 compile_one react_command_center_v3
 compile_one react_command_center

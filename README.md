@@ -20,7 +20,8 @@ monitoring, research, and operator controls. Cron drives the loop.
 > **Full market awareness:** [docs/FULL_MARKET_AWARENESS.md](docs/FULL_MARKET_AWARENESS.md) ·
 > **React command center:** [docs/REACT_COMMAND_CENTER.md](docs/REACT_COMMAND_CENTER.md) ·
 > **React v2 (polished UI):** [docs/REACT_COMMAND_CENTER_V2.md](docs/REACT_COMMAND_CENTER_V2.md) ·
-> **React v3 (live data binding):** [docs/REACT_COMMAND_CENTER_V3.md](docs/REACT_COMMAND_CENTER_V3.md)
+> **React v3 (live data binding):** [docs/REACT_COMMAND_CENTER_V3.md](docs/REACT_COMMAND_CENTER_V3.md) ·
+> **Pro command center:** [docs/PRO_COMMAND_CENTER.md](docs/PRO_COMMAND_CENTER.md)
 
 ---
 
