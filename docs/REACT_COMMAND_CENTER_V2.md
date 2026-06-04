@@ -2,6 +2,16 @@
 
 This patch replaces the earlier React command center with a tighter, data-safe frontend and a more robust Python API server.
 
+## Frontend build
+
+`frontend/react_command_center/app.jsx` is the JSX source. Browsers cannot run JSX directly — compile before deploy:
+
+```bash
+bash scripts/compile_react_command_center.sh
+```
+
+This writes `app.js` (plain `React.createElement`) served at `/assets/app.js`.
+
 ## Key fixes
 
 - Decision API now searches the Render/current working directory for `logs/ifvg_mtf_decision_state.json`.
