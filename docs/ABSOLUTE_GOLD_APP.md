@@ -20,6 +20,14 @@ This patch replaces the single long dashboard with a multi-page trading command 
 
 ## Render start command
 
+With full market awareness (spread, macro, sentiment, COT, cross-market):
+
+```bash
+PYTHONPATH=src python3 scripts/render_absolute_gold_full_context.py
+```
+
+App only (no context layer):
+
 ```bash
 PYTHONPATH=src python3 scripts/render_absolute_gold_app.py
 ```

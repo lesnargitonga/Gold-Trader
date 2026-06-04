@@ -73,6 +73,9 @@ def _decision() -> dict[str, Any]:
     data.setdefault("daily_guard", {})
     data.setdefault("operator_message", _read_text(BRIEF_PATH, ""))
     data["ui_status"] = _system_status(data)
+    live_ctx = _read_json(LOGS / "live_market_context.json", {})
+    if live_ctx:
+        data["live_market_context"] = live_ctx
     return data
 
 

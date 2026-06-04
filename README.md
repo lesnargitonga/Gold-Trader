@@ -16,7 +16,8 @@ monitoring, research, and operator controls. Cron drives the loop.
 > **HTF IFVG reset:** [docs/HTF_IFVG_RESET.md](docs/HTF_IFVG_RESET.md) ·
 > **Full-system IFVG:** [docs/FULL_SYSTEM_IFVG.md](docs/FULL_SYSTEM_IFVG.md) ·
 > **Command center (Render):** [docs/ABSOLUTE_GOLD_COMMAND_CENTER.md](docs/ABSOLUTE_GOLD_COMMAND_CENTER.md) ·
-> **Multi-page app:** [docs/ABSOLUTE_GOLD_APP.md](docs/ABSOLUTE_GOLD_APP.md)
+> **Multi-page app:** [docs/ABSOLUTE_GOLD_APP.md](docs/ABSOLUTE_GOLD_APP.md) ·
+> **Full market awareness:** [docs/FULL_MARKET_AWARENESS.md](docs/FULL_MARKET_AWARENESS.md)
 
 ---
 

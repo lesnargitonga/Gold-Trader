@@ -30,7 +30,7 @@ def load_secrets(path: Path | None = None) -> dict[str, str]:
     if not isinstance(data, dict):
         return {}
     out: dict[str, str] = {}
-    for key in ("openai_api_key", "bridge_secret", "twelve_data_api_key"):
+    for key in ("openai_api_key", "bridge_secret", "twelve_data_api_key", "fmp_api_key", "finnhub_api_key"):
         val = data.get(key)
         if isinstance(val, str) and val.strip():
             out[key] = val.strip()

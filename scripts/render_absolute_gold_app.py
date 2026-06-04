@@ -25,10 +25,16 @@ def scout_loop() -> None:
     while True:
         try:
             log("updating live context and running full-system IFVG engine")
+            env = os.environ.copy()
+            env.setdefault("GOLD_RUNTIME_ROOT", str(ROOT))
+            env.setdefault("GOLD_TRADER_ROOT", str(ROOT))
             ctx = ROOT / "scripts" / "update_live_context.py"
             if ctx.exists():
-                subprocess.run([sys.executable, str(ctx)], cwd=str(ROOT), check=False)
-            subprocess.run([sys.executable, str(ROOT / "scripts" / "ifvg_full_system_engine.py")], cwd=str(ROOT), check=False)
+                subprocess.run([sys.executable, str(ctx)], cwd=str(ROOT), check=False, env=env)
+            subprocess.run([sys.executable, str(ROOT / "scripts" / "ifvg_full_system_engine.py")], cwd=str(ROOT), check=False, env=env)
+            merge = ROOT / "scripts" / "merge_live_context_into_decision.py"
+            if merge.exists():
+                subprocess.run([sys.executable, str(merge)], cwd=str(ROOT), check=False, env=env)
         except Exception as exc:
             log(f"scout loop recovered after error: {exc!r}")
         time.sleep(interval)
