@@ -499,17 +499,31 @@
 
   function marketPage(d) {
     var ph = d.provider_health_summary || {};
+    function providerDetail(v) {
+      var parts = [];
+      if (v.source) parts.push("Source: " + v.source);
+      if (v.configured !== undefined) parts.push("Configured: " + (v.configured ? "yes" : "no"));
+      if (v.age_seconds !== undefined && v.age_seconds !== null) parts.push("Age: " + v.age_seconds + "s");
+      if (v.latency_ms !== undefined && v.latency_ms !== null) parts.push("Latency: " + v.latency_ms + "ms");
+      if (v.required_env && v.required_env.length) parts.push("Needs: " + v.required_env.join(", "));
+      if (v.message) parts.push(v.message);
+      return parts;
+    }
     return (
       '<div class="grid"><section class="card"><h3>Market Intelligence</h3><div class="tfGrid">' +
       Object.keys(ph)
         .map(function (k) {
           var v = ph[k] || {};
+          var detail = providerDetail(v);
           return (
             '<div class="tfCard"><h5>' +
             esc(v.label || k) +
             "</h5><p>State: " +
             esc(v.state || "unknown") +
-            "</p><p>" +
+            (v.severity ? " · " + esc(v.severity) : "") +
+            "</p>" +
+            detail.map(function (x) { return "<p>" + esc(x) + "</p>"; }).join("") +
+            "<p>" +
             esc(k) +
             "</p></div>"
           );

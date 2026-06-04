@@ -451,16 +451,182 @@ def provider_health(decision: dict[str, Any], live_context: dict[str, Any]) -> d
     macro = _feed_state(live_context, "macro_state") or _feed_state(market, "macro_state") or "unknown"
     sentiment = _feed_state(live_context, "sentiment_state") or _feed_state(market, "sentiment_state") or "unknown"
     spread = _feed_state(live_context, "spread_state") or ("ok" if market.get("spread_points") is not None else "unknown")
+    reads = decision.get("timeframe_reads") or []
+    zero_candle_tfs = [
+        str(r.get("timeframe", "")).upper()
+        for r in reads
+        if isinstance(r, dict) and int(_num(r.get("candles"), 0)) <= 0
+    ]
+    candle_warnings = [
+        str(w)
+        for r in reads
+        if isinstance(r, dict)
+        for w in (r.get("warnings") or [])
+        if w
+    ]
+    candles_loaded = int(_num(cloud.get("candles_loaded"), 0))
+    if candles_loaded <= 0 and reads:
+        candles_loaded = sum(int(_num(r.get("candles"), 0)) for r in reads if isinstance(r, dict))
+
+    def file_age(path: Path) -> int | None:
+        try:
+            if path.exists():
+                return max(0, int(now_utc().timestamp() - path.stat().st_mtime))
+        except OSError:
+            return None
+        return None
+
+    def status(
+        state: Any,
+        label: str,
+        *,
+        source: str = "",
+        configured: bool | None = None,
+        message: str = "",
+        required_env: list[str] | None = None,
+        age_seconds: int | None = None,
+        latency_ms: int | None = None,
+        severity: str | None = None,
+    ) -> dict[str, Any]:
+        text = str(state or "unknown")
+        low = text.lower()
+        if severity is None:
+            if low in {"ok", "fresh", "clear", "available", "normal", "neutral", "mild_bullish", "mild_bearish", "bullish", "bearish", "manual_proxy"}:
+                severity = "ok"
+            elif low in {"degraded", "borderline", "unknown_nonfatal_in_paper", "pending", "pending_or_configured", "credentials_present_not_validated", "locked"}:
+                severity = "warning"
+            else:
+                severity = "danger" if low in {"stale", "failed", "error", "blocked"} else "warning"
+        payload: dict[str, Any] = {"state": text, "label": label, "severity": severity}
+        if source:
+            payload["source"] = source
+        if configured is not None:
+            payload["configured"] = configured
+        if message:
+            payload["message"] = message
+        if required_env:
+            payload["required_env"] = required_env
+        if age_seconds is not None:
+            payload["age_seconds"] = age_seconds
+        if latency_ms is not None:
+            payload["latency_ms"] = latency_ms
+        return payload
+
+    td_message = ""
+    td_state = "ok"
+    if zero_candle_tfs:
+        td_state = "degraded"
+        td_message = f"No analysis candles on {', '.join(zero_candle_tfs)}."
+    if candle_warnings:
+        td_state = "degraded"
+        td_message = candle_warnings[0]
+
+    macro_file = ROOT / "data" / "macro" / "economic_calendar.json"
+    sentiment_file = ROOT / "logs" / "sentiment_state.json"
+    spread_file = ROOT / "logs" / "spread_state.json"
+    cot_file = ROOT / "data" / "cot" / "gold_cot_state.json"
+    cross_market_file = ROOT / "logs" / "cross_market_state.json"
+    levels_file = ROOT / "config" / "market_levels.json"
+    ctrader_required = ["CTRADER_CLIENT_ID", "CTRADER_CLIENT_SECRET", "CTRADER_ACCESS_TOKEN", "CTRADER_ACCOUNT_ID"]
+    cme_required = ["CME_API_KEY or CME_CLIENT_ID"]
+    options_required = ["CME_API_KEY or OPTIONS_FEED_URL"]
+    ctrader_configured = all(os.getenv(k) for k in ctrader_required)
+    cme_configured = bool(os.getenv("CME_API_KEY") or os.getenv("CME_CLIENT_ID"))
+    options_configured = bool(os.getenv("OPTIONS_FEED_URL") or os.getenv("CME_API_KEY"))
+
     return {
-        "decision_state": age,
-        "twelvedata": {"state": "ok" if (cloud.get("data_provider") == "twelvedata" or cloud.get("candles_loaded", 0)) else "unknown", "label": "Twelve Data candles"},
-        "fmp_macro": {"state": str(macro), "label": "FMP macro calendar"},
-        "finnhub_sentiment": {"state": str(sentiment), "label": "Finnhub/news sentiment"},
-        "spread": {"state": str(spread), "label": "Spread feed"},
-        "ctrader": {"state": os.getenv("CTRADER_ACCOUNT_ID") and "pending_or_configured" or "pending", "label": "cTrader broker"},
-        "cme": {"state": "not_connected", "label": "CME futures/options"},
-        "options": {"state": "not_connected", "label": "Options/IV/skew"},
-        "orders": {"state": "unlocked" if os.getenv("GOLD_ENABLE_LIVE_ORDERS", "false").lower() == "true" else "locked", "label": "Live orders"},
+        "decision_state": status(
+            age.get("state"),
+            "Decision state",
+            source="ifvg_mtf_decision_state.json",
+            message=age.get("label", ""),
+            age_seconds=age.get("age_seconds"),
+            severity=age.get("severity"),
+        ),
+        "twelvedata": status(
+            td_state,
+            "Twelve Data candles",
+            source="twelvedata_time_series",
+            configured=bool(os.getenv("TWELVE_DATA_API_KEY") or os.getenv("GOLD_TWELVE_DATA_API_KEY")),
+            message=td_message or f"{candles_loaded} analysis candles loaded.",
+        ),
+        "chart_fallback": status(
+            "available",
+            "Chart fallback",
+            source="Yahoo GC=F -> local CSV",
+            configured=True,
+            message="Chart API falls back when Twelve Data is rate-limited; trade decisions remain blocked without primary analysis candles.",
+        ),
+        "fmp_macro": status(
+            macro,
+            "FMP macro calendar",
+            source="fmp_economic_calendar",
+            configured=bool(os.getenv("FMP_API_KEY") or os.getenv("FINANCIAL_MODELING_PREP_API_KEY")),
+            required_env=["FMP_API_KEY"],
+            age_seconds=file_age(macro_file),
+        ),
+        "finnhub_sentiment": status(
+            sentiment,
+            "Finnhub/news sentiment",
+            source="finnhub_forex_news",
+            configured=bool(os.getenv("FINNHUB_API_KEY")),
+            required_env=["FINNHUB_API_KEY"],
+            age_seconds=file_age(sentiment_file),
+        ),
+        "spread": status(
+            spread,
+            "Spread feed",
+            source=(live_context.get("spread_source") or "twelvedata_quote"),
+            configured=bool(os.getenv("TWELVE_DATA_API_KEY") or os.getenv("GOLD_TWELVE_DATA_API_KEY")),
+            age_seconds=file_age(spread_file),
+        ),
+        "cot": status(
+            live_context.get("cot_state") or "unknown",
+            "COT positioning",
+            source=live_context.get("cot_source") or "fmp_cot",
+            configured=bool(os.getenv("FMP_API_KEY") or os.getenv("FINANCIAL_MODELING_PREP_API_KEY")),
+            required_env=["FMP_API_KEY"],
+            age_seconds=file_age(cot_file),
+        ),
+        "cross_market": status(
+            live_context.get("cross_market_state") or "unknown",
+            "DXY / yields / VIX",
+            source=live_context.get("cross_market_source") or "twelvedata_quote",
+            configured=bool(os.getenv("TWELVE_DATA_API_KEY") or os.getenv("GOLD_TWELVE_DATA_API_KEY")),
+            age_seconds=file_age(cross_market_file),
+        ),
+        "ctrader": status(
+            "pending_or_configured" if ctrader_configured else "missing_credentials",
+            "cTrader broker",
+            source="ctrader_open_api",
+            configured=ctrader_configured,
+            required_env=ctrader_required,
+            message="Broker execution remains disabled until credentials and live-order policy are both enabled.",
+        ),
+        "cme": status(
+            "credentials_present_not_validated" if cme_configured else "missing_credentials",
+            "CME futures feed",
+            source="cme_direct_or_vendor",
+            configured=cme_configured,
+            required_env=cme_required,
+            message="No live CME/OI feed is configured. Static market levels are not a substitute for live CME data.",
+        ),
+        "options": status(
+            "credentials_present_not_validated" if options_configured else ("manual_proxy" if levels_file.exists() else "missing_credentials"),
+            "Options / IV / skew",
+            source="options_vendor_or_market_levels_json",
+            configured=options_configured,
+            required_env=options_required,
+            age_seconds=file_age(levels_file),
+            message="Using manual market_levels.json as a proxy until a real options/OI feed is configured." if not options_configured and levels_file.exists() else "",
+        ),
+        "orders": status(
+            "unlocked" if os.getenv("GOLD_ENABLE_LIVE_ORDERS", "false").lower() == "true" else "locked",
+            "Live orders",
+            source="runtime_policy",
+            configured=os.getenv("GOLD_EXECUTION_MODE", "paper").lower() == "live",
+            message=f"Execution mode: {os.getenv('GOLD_EXECUTION_MODE', 'paper')}.",
+        ),
     }
 
 
@@ -540,8 +706,8 @@ def harden_decision(decision: dict[str, Any] | None = None) -> dict[str, Any]:
             "volatility": normalize_feed_display(
                 _feed_state(live_context, "volatility_state") or _feed_state(state.get("market_context") or {}, "volatility_state")
             ),
-            "cme": "not_connected",
-            "options": "not_connected",
+            "cme": "configured" if os.getenv("CME_API_KEY") or os.getenv("CME_CLIENT_ID") else "missing credentials",
+            "options": "configured" if os.getenv("OPTIONS_FEED_URL") or os.getenv("CME_API_KEY") else "manual proxy" if (ROOT / "config" / "market_levels.json").exists() else "missing credentials",
             "cot": _feed_state(live_context, "cot_state") or "unknown",
         },
         "chart_meta": {

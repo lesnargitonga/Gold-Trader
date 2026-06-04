@@ -5,10 +5,12 @@ import json
 import threading
 import time
 import urllib.request
+import os
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+from gold_trader.core.market_intelligence_ux import provider_health
 from gold_trader.web import market_intelligence_api as mi
 
 
@@ -65,3 +67,20 @@ class TestMarketIntelligenceApi:
         assert payload["source"] == "csv_fallback"
         assert payload["count"] == 1
         assert payload["bars"][0]["close"] == 2
+
+    def test_provider_health_exposes_missing_feed_contracts(self) -> None:
+        decision = {
+            "timestamp_utc": "2026-06-04T10:00:00+00:00",
+            "cloud_status": {"data_provider": "twelvedata", "candles_loaded": 0},
+            "timeframe_reads": [
+                {"timeframe": "M15", "candles": 0, "warnings": ["Twelve Data unavailable for M15: HTTP Error 429"]},
+            ],
+            "market_context": {},
+        }
+        with patch.dict(os.environ, {}, clear=True):
+            health = provider_health(decision, {})
+        assert health["twelvedata"]["state"] == "degraded"
+        assert "429" in health["twelvedata"]["message"]
+        assert health["cme"]["state"] == "missing_credentials"
+        assert health["cme"]["required_env"]
+        assert health["options"]["state"] in {"manual_proxy", "missing_credentials"}
