@@ -256,7 +256,7 @@
           esc(
             (d.missing_inputs || [])
               .map(function (x) {
-                return x.label;
+                return typeof x === "string" ? x : x.label || "";
               })
               .join(", ")
           ) +

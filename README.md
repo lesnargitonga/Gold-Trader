@@ -24,7 +24,8 @@ monitoring, research, and operator controls. Cron drives the loop.
 > **Pro command center:** [docs/PRO_COMMAND_CENTER.md](docs/PRO_COMMAND_CENTER.md) ·
 > **Command center v2 (market cockpit):** [docs/COMMAND_CENTER_V2.md](docs/COMMAND_CENTER_V2.md) ·
 > **System hardening v2:** [docs/SYSTEM_HARDENING_V2.md](docs/SYSTEM_HARDENING_V2.md) ·
-> **Market intelligence UX (Render):** [docs/MARKET_INTELLIGENCE_UX.md](docs/MARKET_INTELLIGENCE_UX.md)
+> **Market intelligence UX (Render):** [docs/MARKET_INTELLIGENCE_UX.md](docs/MARKET_INTELLIGENCE_UX.md) ·
+> **Live pipeline repair:** [docs/LIVE_PIPELINE_REPAIR.md](docs/LIVE_PIPELINE_REPAIR.md)
 
 ---
 

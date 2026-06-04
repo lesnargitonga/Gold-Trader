@@ -34,7 +34,6 @@ def run_optional(script_rel: str, label: str) -> None:
 
 def scout_loop() -> None:
     interval = int(os.getenv("GOLD_RENDER_SCOUT_INTERVAL_SECONDS", "300"))
-    calendar_every = int(os.getenv("GOLD_CALENDAR_REFRESH_EVERY_LOOPS", "12"))
     delay = int(os.getenv("GOLD_RENDER_SCOUT_STARTUP_DELAY_SECONDS", "6"))
     time.sleep(max(0, delay))
     n = 0
@@ -42,12 +41,10 @@ def scout_loop() -> None:
         started = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         log(f"cycle start {started}")
         try:
-            if n % calendar_every == 0:
-                run_optional("scripts/fetch_calendar.py", "fetching economic calendar")
             run_optional("scripts/update_live_context.py", "updating live context")
             run_optional("scripts/ifvg_full_system_engine.py", "running full-system IFVG engine")
             run_optional("scripts/merge_live_context_into_decision.py", "merging live context")
-            run_optional("scripts/harden_market_intelligence_ux.py", "hardening market intelligence UX")
+            run_optional("scripts/repair_live_pipeline.py", "repairing live pipeline")
             try:
                 from gold_trader.notify.telegram import send_decision_alert_if_needed
                 import json
@@ -72,6 +69,9 @@ def main() -> None:
     os.environ.setdefault("GOLD_MARKET_DATA_PROVIDER", "twelvedata")
     os.environ.setdefault("GOLD_RUNTIME_ROOT", str(ROOT))
     os.environ.setdefault("GOLD_TRADER_ROOT", str(ROOT))
+    os.environ.setdefault("GOLD_REPO_ROOT", str(ROOT))
+
+    run_optional("scripts/repair_live_pipeline.py", "initial live pipeline repair")
 
     threading.Thread(target=scout_loop, daemon=True).start()
 

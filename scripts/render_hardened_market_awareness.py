@@ -6,4 +6,4 @@ import runpy
 from pathlib import Path
 
 if __name__ == "__main__":
-    runpy.run_path(str(Path(__file__).resolve().parent / "render_market_intelligence_ux.py"), run_name="__main__")
+    runpy.run_path(str(Path(__file__).resolve().parent / "render_live_pipeline_repaired.py"), run_name="__main__")
