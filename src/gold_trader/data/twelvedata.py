@@ -424,7 +424,7 @@ def candles_for_chart(
 ) -> dict[str, Any]:
     """Payload for /api/candles — never reports ok when count is zero."""
     tf = timeframe.strip().upper()
-    count = max(20, min(int(count), 500))
+    count = max(1, min(int(count), 500))
     chart_ttl = int(os.environ.get("GOLD_CHART_CACHE_SECONDS", "600"))
     rows, err, stale = _fetch_twelvedata_rows(
         symbol, tf, limit=count, repo=repo, cache_ttl_seconds=chart_ttl

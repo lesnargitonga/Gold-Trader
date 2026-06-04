@@ -81,9 +81,32 @@ class TestMarketIntelligenceApi:
             health = provider_health(decision, {})
         assert health["twelvedata"]["state"] == "degraded"
         assert "429" in health["twelvedata"]["message"]
+        assert health["chart_fallback"]["state"] == "chart_only"
+        assert health["chart_fallback"]["severity"] == "warning"
         assert health["cme"]["state"] == "missing_credentials"
         assert health["cme"]["required_env"]
         assert health["options"]["state"] in {"manual_proxy", "missing_credentials"}
+
+    def test_provider_health_surfaces_upstream_errors_and_proxy_warning(self) -> None:
+        decision = {
+            "timestamp_utc": "2026-06-04T10:00:00+00:00",
+            "cloud_status": {"data_provider": "twelvedata", "candles_loaded": 50},
+            "timeframe_reads": [{"timeframe": "M15", "candles": 50}],
+            "market_context": {"cross_market_state": "available", "cross_market_source": "twelvedata_quote"},
+        }
+        context = {
+            "macro_state": {"state": "unknown", "source": "fmp", "error": "<HTTPError 403: 'Forbidden'>"},
+            "spread_state": {"state": "unknown_nonfatal_in_paper", "source": "twelvedata", "error": "<HTTPError 429: 'Too Many Requests'>"},
+            "volatility_state": {"state": "normal", "source": "twelvedata_M15", "atr": 4.1},
+        }
+        with patch.dict(os.environ, {}, clear=True):
+            health = provider_health(decision, context)
+        assert health["fmp_macro"]["source"] == "fmp"
+        assert "403" in health["fmp_macro"]["message"]
+        assert "429" in health["spread"]["message"]
+        assert health["cross_market"]["state"] == "available"
+        assert health["volatility"]["state"] == "normal"
+        assert health["options"]["severity"] == "warning"
 
     def test_provider_health_endpoint_normalizes_stale_dict_state(self) -> None:
         stale = {"cot": {"state": {"state": "unknown", "source": "not_connected"}, "label": "COT"}}

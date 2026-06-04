@@ -166,3 +166,39 @@ def test_candles_for_chart_uses_csv_fallback_on_api_error(tmp_path: Path) -> Non
     assert out["provider"] == "csv_fallback"
     assert out["count"] == 2
     assert out["candles"][-1]["close"] == 3308.0
+
+
+def test_candles_for_chart_honors_small_count_with_csv_fallback(tmp_path: Path) -> None:
+    csv_dir = tmp_path / "data" / "live_xauusd"
+    csv_dir.mkdir(parents=True)
+    (csv_dir / "xauusd_15m.csv").write_text(
+        "\n".join(
+            [
+                "timestamp,open,high,low,close,volume",
+                "2026-06-04T10:00:00+00:00,3300,3310,3295,3305,10",
+                "2026-06-04T10:15:00+00:00,3305,3312,3301,3308,11",
+                "2026-06-04T10:30:00+00:00,3308,3316,3303,3314,12",
+            ]
+        )
+    )
+
+    class FakeResp:
+        def read(self) -> bytes:
+            return json.dumps({"status": "error", "message": "API credits exceeded"}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    with patch.dict(
+        "os.environ",
+        {"TWELVE_DATA_API_KEY": "test-key", "GOLD_ENABLE_YAHOO_CHART_FALLBACK": "false"},
+        clear=False,
+    ):
+        with patch("urllib.request.urlopen", return_value=FakeResp()):
+            out = candles_for_chart("M15", symbol="XAUUSD", count=1, repo=tmp_path)
+    assert out["count"] == 1
+    assert len(out["candles"]) == 1
+    assert out["candles"][0]["close"] == 3314.0

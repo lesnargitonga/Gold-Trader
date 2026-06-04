@@ -476,6 +476,39 @@ def provider_health(decision: dict[str, Any], live_context: dict[str, Any]) -> d
             return None
         return None
 
+    def feed_object(*keys: str) -> dict[str, Any]:
+        for key in keys:
+            raw = live_context.get(key)
+            if isinstance(raw, dict):
+                return raw
+        for key in keys:
+            raw = market.get(key)
+            if isinstance(raw, dict):
+                return raw
+        return {}
+
+    def feed_age(feed: dict[str, Any], fallback_path: Path | None = None) -> int | None:
+        raw_age = feed.get("age_seconds")
+        if raw_age is not None:
+            try:
+                return max(0, int(float(raw_age)))
+            except (TypeError, ValueError):
+                pass
+        dt = parse_dt(feed.get("updated_at") or feed.get("timestamp_utc") or feed.get("time"))
+        if dt:
+            return max(0, int((now_utc() - dt).total_seconds()))
+        return file_age(fallback_path) if fallback_path else None
+
+    def feed_message(feed: dict[str, Any], default: str = "") -> str:
+        for key in ("error", "warning", "message", "summary"):
+            value = feed.get(key)
+            if value:
+                return str(value)
+        blockers = feed.get("blockers")
+        if isinstance(blockers, list) and blockers:
+            return "; ".join(str(x) for x in blockers[:3])
+        return default
+
     def status(
         state: Any,
         label: str,
@@ -498,6 +531,8 @@ def provider_health(decision: dict[str, Any], live_context: dict[str, Any]) -> d
                 severity = "warning"
             else:
                 severity = "danger" if low in {"stale", "failed", "error", "blocked"} else "warning"
+        if configured is False and severity == "ok":
+            severity = "warning"
         payload: dict[str, Any] = {"state": text, "label": label, "severity": severity}
         if source:
             payload["source"] = source
@@ -525,9 +560,16 @@ def provider_health(decision: dict[str, Any], live_context: dict[str, Any]) -> d
     macro_file = ROOT / "data" / "macro" / "economic_calendar.json"
     sentiment_file = ROOT / "logs" / "sentiment_state.json"
     spread_file = ROOT / "logs" / "spread_state.json"
+    volatility_file = ROOT / "logs" / "volatility_state.json"
     cot_file = ROOT / "data" / "cot" / "gold_cot_state.json"
     cross_market_file = ROOT / "logs" / "cross_market_state.json"
     levels_file = ROOT / "config" / "market_levels.json"
+    macro_feed = feed_object("macro_state", "macro")
+    sentiment_feed = feed_object("sentiment_state", "sentiment")
+    spread_feed = feed_object("spread_state", "spread")
+    volatility_feed = feed_object("volatility_state", "volatility")
+    cot_feed = feed_object("cot_state", "cot")
+    cross_market_feed = feed_object("cross_market_state", "cross_market")
     ctrader_required = ["CTRADER_CLIENT_ID", "CTRADER_CLIENT_SECRET", "CTRADER_ACCESS_TOKEN", "CTRADER_ACCOUNT_ID"]
     cme_required = ["CME_API_KEY or CME_CLIENT_ID"]
     options_required = ["CME_API_KEY or OPTIONS_FEED_URL"]
@@ -552,49 +594,63 @@ def provider_health(decision: dict[str, Any], live_context: dict[str, Any]) -> d
             message=td_message or f"{candles_loaded} analysis candles loaded.",
         ),
         "chart_fallback": status(
-            "available",
+            "chart_only",
             "Chart fallback",
             source="Yahoo GC=F -> local CSV",
             configured=True,
-            message="Chart API falls back when Twelve Data is rate-limited; trade decisions remain blocked without primary analysis candles.",
+            message="Chart-only fallback is available when Twelve Data is rate-limited; it is not treated as a verified analysis feed.",
+            severity="warning",
         ),
         "fmp_macro": status(
             macro,
             "FMP macro calendar",
-            source="fmp_economic_calendar",
+            source=macro_feed.get("source") or "fmp_economic_calendar",
             configured=bool(os.getenv("FMP_API_KEY") or os.getenv("FINANCIAL_MODELING_PREP_API_KEY")),
             required_env=["FMP_API_KEY"],
-            age_seconds=file_age(macro_file),
+            age_seconds=feed_age(macro_feed, macro_file),
+            message=feed_message(macro_feed),
         ),
         "finnhub_sentiment": status(
             sentiment,
             "Finnhub/news sentiment",
-            source="finnhub_forex_news",
+            source=sentiment_feed.get("source") or "finnhub_forex_news",
             configured=bool(os.getenv("FINNHUB_API_KEY")),
             required_env=["FINNHUB_API_KEY"],
-            age_seconds=file_age(sentiment_file),
+            age_seconds=feed_age(sentiment_feed, sentiment_file),
+            message=feed_message(sentiment_feed),
         ),
         "spread": status(
             spread,
             "Spread feed",
-            source=(live_context.get("spread_source") or "twelvedata_quote"),
+            source=spread_feed.get("source") or live_context.get("spread_source") or market.get("spread_source") or "twelvedata_quote",
             configured=bool(os.getenv("TWELVE_DATA_API_KEY") or os.getenv("GOLD_TWELVE_DATA_API_KEY")),
-            age_seconds=file_age(spread_file),
+            age_seconds=feed_age(spread_feed, spread_file),
+            message=feed_message(spread_feed),
+        ),
+        "volatility": status(
+            _feed_state(live_context, "volatility_state") or _feed_state(market, "volatility_state") or "unknown",
+            "M15 ATR volatility",
+            source=volatility_feed.get("source") or "twelvedata_M15",
+            configured=bool(os.getenv("TWELVE_DATA_API_KEY") or os.getenv("GOLD_TWELVE_DATA_API_KEY")),
+            age_seconds=feed_age(volatility_feed, volatility_file),
+            message=feed_message(volatility_feed),
         ),
         "cot": status(
-            live_context.get("cot_state") or "unknown",
+            live_context.get("cot_state") or market.get("cot_state") or "unknown",
             "COT positioning",
-            source=live_context.get("cot_source") or "fmp_cot",
+            source=cot_feed.get("source") or live_context.get("cot_source") or market.get("cot_source") or "fmp_cot",
             configured=bool(os.getenv("FMP_API_KEY") or os.getenv("FINANCIAL_MODELING_PREP_API_KEY")),
             required_env=["FMP_API_KEY"],
-            age_seconds=file_age(cot_file),
+            age_seconds=feed_age(cot_feed, cot_file),
+            message=feed_message(cot_feed),
         ),
         "cross_market": status(
-            live_context.get("cross_market_state") or "unknown",
+            live_context.get("cross_market_state") or market.get("cross_market_state") or "unknown",
             "DXY / yields / VIX",
-            source=live_context.get("cross_market_source") or "twelvedata_quote",
+            source=cross_market_feed.get("source") or live_context.get("cross_market_source") or market.get("cross_market_source") or "twelvedata_quote",
             configured=bool(os.getenv("TWELVE_DATA_API_KEY") or os.getenv("GOLD_TWELVE_DATA_API_KEY")),
-            age_seconds=file_age(cross_market_file),
+            age_seconds=feed_age(cross_market_feed, cross_market_file),
+            message=feed_message(cross_market_feed),
         ),
         "ctrader": status(
             "pending_or_configured" if ctrader_configured else "missing_credentials",
@@ -620,6 +676,7 @@ def provider_health(decision: dict[str, Any], live_context: dict[str, Any]) -> d
             required_env=options_required,
             age_seconds=file_age(levels_file),
             message="Using manual market_levels.json as a proxy until a real options/OI feed is configured." if not options_configured and levels_file.exists() else "",
+            severity="warning" if not options_configured else None,
         ),
         "orders": status(
             "unlocked" if os.getenv("GOLD_ENABLE_LIVE_ORDERS", "false").lower() == "true" else "locked",
