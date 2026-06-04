@@ -26,25 +26,29 @@ def run_optional(script_rel: str, label: str) -> None:
             env = os.environ.copy()
             env.setdefault("GOLD_RUNTIME_ROOT", str(ROOT))
             env.setdefault("GOLD_TRADER_ROOT", str(ROOT))
+            env.setdefault("GOLD_REPO_ROOT", str(ROOT))
             log(label)
             subprocess.run([sys.executable, str(script)], cwd=str(ROOT), check=False, env=env)
     except Exception as exc:
         log(f"{label} failed: {exc!r}")
 
 
+def full_cycle() -> None:
+    run_optional("scripts/update_live_context.py", "updating live context")
+    run_optional("scripts/ifvg_full_system_engine.py", "running full-system IFVG engine")
+    run_optional("scripts/merge_live_context_into_decision.py", "merging live context")
+    run_optional("scripts/repair_live_pipeline.py", "repairing live pipeline")
+
+
 def scout_loop() -> None:
     interval = int(os.getenv("GOLD_RENDER_SCOUT_INTERVAL_SECONDS", "300"))
     delay = int(os.getenv("GOLD_RENDER_SCOUT_STARTUP_DELAY_SECONDS", "6"))
     time.sleep(max(0, delay))
-    n = 0
     while True:
         started = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         log(f"cycle start {started}")
         try:
-            run_optional("scripts/update_live_context.py", "updating live context")
-            run_optional("scripts/ifvg_full_system_engine.py", "running full-system IFVG engine")
-            run_optional("scripts/merge_live_context_into_decision.py", "merging live context")
-            run_optional("scripts/repair_live_pipeline.py", "repairing live pipeline")
+            full_cycle()
             try:
                 from gold_trader.notify.telegram import send_decision_alert_if_needed
                 import json
@@ -57,7 +61,6 @@ def scout_loop() -> None:
                 log(f"telegram alert skipped: {exc!r}")
         except Exception as exc:
             log(f"cycle error: {exc!r}")
-        n += 1
         log(f"cycle complete; sleeping {interval}s")
         time.sleep(interval)
 
@@ -71,7 +74,8 @@ def main() -> None:
     os.environ.setdefault("GOLD_TRADER_ROOT", str(ROOT))
     os.environ.setdefault("GOLD_REPO_ROOT", str(ROOT))
 
-    run_optional("scripts/repair_live_pipeline.py", "initial live pipeline repair")
+    # Run engine + repair before serving so the first page load is not placeholder state.
+    full_cycle()
 
     threading.Thread(target=scout_loop, daemon=True).start()
 

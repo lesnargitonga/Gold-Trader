@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render entrypoint: live pipeline repair scout + market intelligence UI."""
+"""Render entrypoint: v3 live pipeline (full cycle before serve)."""
 from __future__ import annotations
 
 import runpy

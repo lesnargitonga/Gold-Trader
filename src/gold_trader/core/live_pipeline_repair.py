@@ -37,7 +37,13 @@ def _decision_paths() -> list[Path]:
             base = Path(base).resolve()
         except Exception:
             continue
-        for rel in (("logs", "ifvg_mtf_decision_state.json"), ("data", "state.json")):
+        for rel in (
+            ("logs", "ifvg_mtf_decision_state.json"),
+            ("logs", "ifvg_mtf_decision_state.raw.json"),
+            ("logs", "decision_state.json"),
+            ("data", "ifvg_mtf_decision_state.json"),
+            ("data", "state.json"),
+        ):
             candidate = base.joinpath(*rel)
             if candidate not in paths:
                 paths.append(candidate)
@@ -91,18 +97,16 @@ def parse_time(value: Any) -> datetime | None:
             seconds /= 1000.0
         return datetime.fromtimestamp(seconds, tz=timezone.utc)
 
-    text = str(value).strip()
+    text = str(value).strip().replace("Z", "+00:00")
     if not text:
         return None
-    text = text.replace("Z", "+00:00")
     try:
-        parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     except Exception:
         pass
-
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
             return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
@@ -133,11 +137,13 @@ def http_get_text(url: str, timeout: int = 25) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
-def fetch_twelve_candles(tf: str, count: int = 300) -> list[dict[str, Any]]:
+def fetch_twelve_candles_direct(tf: str, count: int = 280) -> tuple[list[dict[str, Any]], str | None]:
     key = api_key("TWELVE_DATA_API_KEY")
     interval = TWELVE_INTERVALS.get(tf.upper())
-    if not key or not interval:
-        return []
+    if not key:
+        return [], "TWELVE_DATA_API_KEY missing"
+    if not interval:
+        return [], f"unsupported timeframe {tf}"
 
     params = {
         "symbol": twelve_symbol(),
@@ -149,10 +155,15 @@ def fetch_twelve_candles(tf: str, count: int = 300) -> list[dict[str, Any]]:
     url = "https://api.twelvedata.com/time_series?" + urllib.parse.urlencode(params)
     try:
         raw = http_get_text(url)
-    except Exception:
-        return []
+    except Exception as exc:
+        return [], repr(exc)
+
     if raw.lstrip().startswith("{"):
-        return []
+        try:
+            payload = json.loads(raw)
+            return [], str(payload.get("message") or payload)
+        except Exception:
+            return [], raw[:300]
 
     candles: list[dict[str, Any]] = []
     for row in csv.DictReader(io.StringIO(raw)):
@@ -169,9 +180,25 @@ def fetch_twelve_candles(tf: str, count: int = 300) -> list[dict[str, Any]]:
             )
         except Exception:
             continue
-
     candles.reverse()
-    return candles
+    return candles, None if candles else "empty candle response"
+
+
+def fetch_twelve_candles(tf: str, count: int = 280) -> tuple[list[dict[str, Any]], str | None]:
+    # Prefer the repo's already-working provider if present. This avoids divergence from /api/candles.
+    try:
+        from gold_trader.data.twelvedata import fetch_candles  # type: ignore
+
+        candles = fetch_candles(tf.upper(), symbol=twelve_symbol(), count=count, repo=ROOT)
+        if candles:
+            return candles, None
+    except Exception as exc:
+        provider_error = repr(exc)
+    else:
+        provider_error = "provider returned no candles"
+
+    candles, direct_error = fetch_twelve_candles_direct(tf, count=count)
+    return candles, None if candles else f"{provider_error}; direct={direct_error}"
 
 
 def fetch_twelve_quote() -> dict[str, Any]:
@@ -184,11 +211,17 @@ def fetch_twelve_quote() -> dict[str, Any]:
     try:
         payload = json.loads(http_get_text(url))
     except Exception as exc:
-        return {"state": "error", "source": "twelvedata", "error": repr(exc), "updated_at": iso_now()}
+        return {
+            "state": "unknown_nonfatal_in_paper",
+            "source": "twelvedata",
+            "error": repr(exc),
+            "updated_at": iso_now(),
+        }
 
     if not isinstance(payload, dict) or payload.get("status") == "error" or payload.get("code"):
+        # Quote endpoint is not fatal because candles may still work.
         return {
-            "state": "error",
+            "state": "unknown_nonfatal_in_paper",
             "source": "twelvedata",
             "error": payload.get("message") if isinstance(payload, dict) else str(payload),
             "updated_at": iso_now(),
@@ -362,28 +395,60 @@ def read_sentiment_state() -> dict[str, Any]:
     }
 
 
-def load_decision() -> dict[str, Any]:
-    existing = [p for p in _decision_paths() if p.exists()]
-    for path in sorted(existing, key=lambda p: p.stat().st_mtime, reverse=True):
+def decision_quality(payload: dict[str, Any]) -> int:
+    if not isinstance(payload, dict):
+        return -1
+    score = 0
+    if payload.get("current_price") is not None:
+        score += 20
+    reads = payload.get("timeframe_reads") or []
+    if isinstance(reads, list):
+        score += min(70, sum(10 for r in reads if int((r or {}).get("candles") or 0) > 0))
+    if payload.get("entry_low") is not None:
+        score += 5
+    if payload.get("timestamp_utc"):
+        score += 5
+    return score
+
+
+def load_best_decision() -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in _decision_paths():
+        key = str(path)
+        if key in seen or not path.exists():
+            continue
+        seen.add(key)
         payload = read_json(path, {})
         if isinstance(payload, dict) and payload:
-            return payload
-    return {
-        "timestamp_utc": iso_now(),
-        "symbol": "XAUUSD",
-        "action": "WAIT_HARD_BLOCK",
-        "side": "none",
-        "final_score": 0,
-        "final_grade": "D",
-        "timeframe_reads": [],
-        "reasons": ["decision state unavailable"],
-        "blockers": ["decision engine has not written state yet"],
-    }
+            payload["_source_path"] = str(path)
+            candidates.append(payload)
+
+    if not candidates:
+        return {
+            "timestamp_utc": iso_now(),
+            "symbol": "XAUUSD",
+            "action": "WAIT_HARD_BLOCK",
+            "side": "none",
+            "final_score": 0,
+            "final_grade": "D",
+            "timeframe_reads": [],
+            "reasons": ["decision state unavailable"],
+            "blockers": ["decision engine has not written state yet"],
+        }
+
+    # Do not let a placeholder data/state.json clobber a real engine decision.
+    return max(candidates, key=decision_quality)
 
 
-def repair_timeframe_candles(decision: dict[str, Any]) -> None:
+def repair_timeframe_candles(decision: dict[str, Any]) -> dict[str, str]:
     reads = decision.setdefault("timeframe_reads", [])
+    if not isinstance(reads, list):
+        reads = []
+        decision["timeframe_reads"] = reads
+
     existing = {str(r.get("timeframe", "")).upper(): r for r in reads if isinstance(r, dict)}
+    fetch_errors: dict[str, str] = {}
 
     for tf in TIMEFRAMES:
         row = existing.get(tf)
@@ -405,7 +470,7 @@ def repair_timeframe_candles(decision: dict[str, Any]) -> None:
             reads.append(row)
 
         if int(row.get("candles") or 0) <= 0:
-            candles = fetch_twelve_candles(tf, count=300)
+            candles, error = fetch_twelve_candles(tf, count=280)
             if candles:
                 row["candles"] = len(candles)
                 row["current_price"] = float(candles[-1]["close"])
@@ -414,6 +479,18 @@ def repair_timeframe_candles(decision: dict[str, Any]) -> None:
                 warnings = [w for w in (row.get("warnings") or []) if "no live/cached candle data" not in str(w)]
                 warnings.append("candles repaired from Twelve Data; IFVG not inferred by repair layer")
                 row["warnings"] = warnings
+            else:
+                fetch_errors[tf] = error or "unknown candle fetch error"
+
+    # If current price is missing, use the latest repaired/read candle.
+    if decision.get("current_price") is None:
+        for tf in ("M1", "M5", "M15", "H1", "H4", "D1"):
+            row = next((r for r in reads if str(r.get("timeframe", "")).upper() == tf), None)
+            if row and row.get("current_price") is not None:
+                decision["current_price"] = row["current_price"]
+                break
+
+    return fetch_errors
 
 
 def alignment_audit(decision: dict[str, Any]) -> dict[str, Any]:
@@ -465,14 +542,14 @@ def alignment_audit(decision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def harden_scores(decision: dict[str, Any], live_context: dict[str, Any]) -> dict[str, Any]:
+def harden_scores(decision: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     audit = alignment_audit(decision)
     side = audit["side"]
 
-    macro = live_context["macro_state"]
-    sentiment = live_context["sentiment_state"]
-    spread = live_context["spread_state"]
-    volatility = live_context["volatility_state"]
+    macro = context["macro_state"]
+    sentiment = context["sentiment_state"]
+    spread = context["spread_state"]
+    volatility = context["volatility_state"]
 
     missing: list[str] = []
     hard_blocks: list[str] = []
@@ -546,12 +623,12 @@ def harden_scores(decision: dict[str, Any], live_context: dict[str, Any]) -> dic
         missing.append("Spread feed missing")
     else:
         session_score = 0
-        hard_blocks.append("spread feed unhealthy")
+        missing.append("Spread feed missing")
 
     vol_state = str(volatility.get("state", "unknown")).lower()
     if vol_state == "normal":
         vol_score = 10
-    elif vol_state in {"compressed", "high"}:
+    elif vol_state in {"compressed", "high", "extreme"}:
         vol_score = 5
     else:
         vol_score = 0
@@ -618,7 +695,7 @@ def harden_scores(decision: dict[str, Any], live_context: dict[str, Any]) -> dic
     }
 
 
-def build_provider_health(decision: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+def build_provider_health(decision: dict[str, Any], context: dict[str, Any], fetch_errors: dict[str, str]) -> dict[str, Any]:
     reads = decision.get("timeframe_reads") or []
     candle_total = sum(int(row.get("candles") or 0) for row in reads)
 
@@ -635,10 +712,11 @@ def build_provider_health(decision: dict[str, Any], context: dict[str, Any]) -> 
             "severity": "ok" if decision_state == "fresh" else "warning" if decision_state == "borderline" else "critical",
         },
         "twelvedata": {
-            "state": "ok" if candle_total > 0 else "unknown",
+            "state": "ok" if candle_total > 0 else "error",
             "label": "Twelve Data candles",
             "candles_loaded": candle_total,
             "symbol": twelve_symbol(),
+            "fetch_errors": fetch_errors,
         },
         "fmp_macro": {
             "state": context["macro_state"].get("state", "unknown"),
@@ -654,24 +732,16 @@ def build_provider_health(decision: dict[str, Any], context: dict[str, Any]) -> 
             "state": context["spread_state"].get("state", "unknown"),
             "label": "Spread feed",
             "spread_points": context["spread_state"].get("spread_points"),
+            "error": context["spread_state"].get("error"),
         },
         "volatility": {
             "state": context["volatility_state"].get("state", "unknown"),
             "label": "M15 ATR volatility",
             "atr": context["volatility_state"].get("atr"),
         },
-        "ctrader": {
-            "state": "connected" if api_key("CTRADER_ACCESS_TOKEN") else "pending",
-            "label": "cTrader broker",
-        },
-        "cme": {
-            "state": "connected" if api_key("CME_API_KEY") else "not_connected",
-            "label": "CME futures/options",
-        },
-        "options": {
-            "state": "connected" if api_key("OPTIONS_API_KEY") else "not_connected",
-            "label": "Options/IV/skew",
-        },
+        "ctrader": {"state": "connected" if api_key("CTRADER_ACCESS_TOKEN") else "pending", "label": "cTrader broker"},
+        "cme": {"state": "connected" if api_key("CME_API_KEY") else "not_connected", "label": "CME futures/options"},
+        "options": {"state": "connected" if api_key("OPTIONS_API_KEY") else "not_connected", "label": "Options/IV/skew"},
         "orders": {
             "state": "unlocked" if os.getenv("GOLD_ENABLE_LIVE_ORDERS", "false").lower() == "true" else "locked",
             "label": "Live orders",
@@ -685,15 +755,20 @@ def repair_and_harden() -> dict[str, Any]:
     LOGS.mkdir(parents=True, exist_ok=True)
     DATA.mkdir(parents=True, exist_ok=True)
 
-    decision = load_decision()
-    repair_timeframe_candles(decision)
+    decision = load_best_decision()
+    fetch_errors = repair_timeframe_candles(decision)
+
+    m15_candles, m15_error = fetch_twelve_candles("M15", count=100)
+    volatility = atr_volatility(m15_candles)
+    if m15_error and volatility.get("state") == "unknown":
+        volatility["error"] = m15_error
 
     calendar = fetch_fmp_calendar()
     context = {
         "updated_at": iso_now(),
         "macro_state": compute_macro_state(calendar),
         "spread_state": fetch_twelve_quote(),
-        "volatility_state": atr_volatility(fetch_twelve_candles("M15", count=100)),
+        "volatility_state": volatility,
         "sentiment_state": read_sentiment_state(),
         "cot_state": {"state": "unknown", "source": "not_connected"},
         "cme_state": {"state": "not_connected", "source": "not_connected"},
@@ -706,10 +781,8 @@ def repair_and_harden() -> dict[str, Any]:
 
     hardened = harden_scores(decision, context)
 
-    original_score = decision.get("final_score")
-    original_grade = decision.get("final_grade")
-    decision["final_score_raw_before_hardening"] = original_score
-    decision["final_grade_raw_before_hardening"] = original_grade
+    decision["final_score_raw_before_hardening"] = decision.get("final_score")
+    decision["final_grade_raw_before_hardening"] = decision.get("final_grade")
     decision["final_score"] = hardened["hardened_score"]
     decision["final_grade"] = hardened["hardened_grade"]
     decision["score_decomposition"] = hardened["score_decomposition"]
@@ -729,8 +802,7 @@ def repair_and_harden() -> dict[str, Any]:
     for item in (decision.get("blockers") or []) + hardened["hard_blocks"] + hardened["soft_blocks"]:
         if not item:
             continue
-        text = str(item)
-        text = text.replace(
+        text = str(item).replace(
             "session off_peak not in allowed sessions ['london', 'london_new_york_overlap', 'new_york']",
             "Current session is off-peak. Allowed: London, London/New York overlap, New York.",
         )
@@ -751,12 +823,10 @@ def repair_and_harden() -> dict[str, Any]:
     if not hardened["grade_allowed"]:
         decision["action"] = "WAIT_HARD_BLOCK" if hardened["hard_blocks"] else "WAIT"
         decision["next_update"] = "Wait for all-timeframe alignment, clean IFVG retest, acceptable spread/session/volatility, clear macro window, and non-conflicting sentiment."
-    elif str(decision.get("action") or "").startswith("TRADE_READY"):
-        pass
-    else:
+    elif not str(decision.get("action") or "").startswith("TRADE_READY"):
         decision["action"] = "TRADE_READY_PAPER_AUTO_ALERT_AUTO"
 
-    health = build_provider_health(decision, context)
+    health = build_provider_health(decision, context, fetch_errors)
     decision["provider_health"] = health
     decision["cloud_status"] = {
         "analysis": "online",
@@ -794,6 +864,7 @@ def repair_and_harden() -> dict[str, Any]:
         "action": decision.get("action"),
         "score": decision.get("final_score"),
         "grade": decision.get("final_grade"),
+        "candles_loaded": health["twelvedata"]["candles_loaded"],
         "missing_inputs": decision.get("missing_inputs"),
         "hard_blocks": decision.get("hard_blocks"),
         "provider_health": health,
