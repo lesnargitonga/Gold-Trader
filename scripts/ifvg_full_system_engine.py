@@ -31,7 +31,7 @@ class Candle:
 class TimeframeRead:
     timeframe: str
     candles: int
-    current_price: float
+    current_price: float | None
     bias: Bias
     ifvg_side: Side
     ifvg_zone_low: float | None = None
@@ -259,7 +259,7 @@ def detect_liquidity_sweep(candles: list[Candle]) -> bool:
 def analyze_timeframe(symbol: str, timeframe: str) -> TimeframeRead:
     candles = load_candles(symbol, timeframe)
     if not candles:
-        return TimeframeRead(timeframe, 0, math.nan, "unknown", "none", warnings=["no live/cached candle data"])
+        return TimeframeRead(timeframe, 0, None, "unknown", "none", warnings=["no live/cached candle data"])
     bias, breasons, bscore = infer_bias(candles)
     side, zl, zh, ireasons = detect_ifvg(candles)
     disp, sweep = detect_displacement(candles), detect_liquidity_sweep(candles)
@@ -583,7 +583,7 @@ def main() -> int:
     jp = REPO / policy["operator_updates"]["json_path"]; mp = REPO / policy["operator_updates"]["markdown_path"]
     jp.parent.mkdir(parents=True, exist_ok=True); mp.parent.mkdir(parents=True, exist_ok=True)
     decision_dict = asdict(decision)
-    jp.write_text(json.dumps(decision_dict, indent=2)); mp.write_text(decision.operator_message)
+    jp.write_text(json.dumps(decision_dict, indent=2, allow_nan=False)); mp.write_text(decision.operator_message)
     send_operator_alert(policy, decision_dict)
     print(json.dumps(decision_dict, indent=2))
     return 0

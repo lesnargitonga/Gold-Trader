@@ -28,7 +28,7 @@ class Candle:
 class TimeframeRead:
     timeframe: str
     candles: int
-    current_price: float
+    current_price: float | None
     bias: Bias
     ifvg_side: Side
     ifvg_zone_low: float | None = None
@@ -221,7 +221,7 @@ def detect_liquidity_sweep(candles: list[Candle]) -> bool:
 def analyze_timeframe(symbol: str, timeframe: str) -> TimeframeRead:
     candles = load_candles(symbol, timeframe)
     if not candles:
-        return TimeframeRead(timeframe, 0, math.nan, "unknown", "none", warnings=["no live/cached candle data"])
+        return TimeframeRead(timeframe, 0, None, "unknown", "none", warnings=["no live/cached candle data"])
     bias, breasons, bscore = infer_bias(candles)
     side, zl, zh, ireasons = detect_ifvg(candles)
     disp, sweep = detect_displacement(candles), detect_liquidity_sweep(candles)

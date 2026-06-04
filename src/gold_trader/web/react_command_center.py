@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import mimetypes
 import os
 import time
@@ -74,10 +75,26 @@ def _decision_paths() -> list[Path]:
     return paths
 
 
+def _json_safe(value: object) -> object:
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict):
+            return _json_safe(data)  # type: ignore[return-value]
+        return {}
     except Exception:
         return {}
 
@@ -195,7 +212,7 @@ def load_decision() -> dict:
         "source_age_seconds": base.get("_source_age_seconds"),
         "render": bool(os.getenv("RENDER")),
     }
-    return base
+    return _json_safe(base)  # type: ignore[return-value]
 
 
 def candles_from_twelvedata(tf: str, count: int) -> tuple[list[dict], str]:
@@ -263,7 +280,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _json(self, obj: object, status: int = 200) -> None:
-        self._send(status, json.dumps(obj, allow_nan=False, default=str).encode("utf-8"), "application/json; charset=utf-8")
+        payload = _json_safe(obj)
+        self._send(status, json.dumps(payload, allow_nan=False, default=str).encode("utf-8"), "application/json; charset=utf-8")
 
     def _send_static(self, rel: str) -> None:
         path = (FRONTEND_DIR / rel).resolve()
