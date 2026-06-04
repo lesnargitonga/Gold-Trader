@@ -11,7 +11,6 @@ from .ny_close_compression import NYCloseCompressionStrategy
 from .ny_session_breakout import NYSessionBreakoutStrategy
 from .opening_range_breakout import OpeningRangeBreakoutStrategy
 from .previous_day_breakout import PreviousDayBreakoutStrategy
-from .real_yield_reversal import RealYieldReversalStrategy
 from .rsi_divergence import RsiDivergenceStrategy
 from .session_continuation import SessionContinuationStrategy
 from .trend_pullback import TrendPullbackStrategy
@@ -30,7 +29,6 @@ __all__ = [
     "NYSessionBreakoutStrategy",
     "OpeningRangeBreakoutStrategy",
     "PreviousDayBreakoutStrategy",
-    "RealYieldReversalStrategy",
     "RsiDivergenceStrategy",
     "SessionContinuationStrategy",
     "TrendPullbackStrategy",
