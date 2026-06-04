@@ -84,3 +84,12 @@ class TestMarketIntelligenceApi:
         assert health["cme"]["state"] == "missing_credentials"
         assert health["cme"]["required_env"]
         assert health["options"]["state"] in {"manual_proxy", "missing_credentials"}
+
+    def test_provider_health_endpoint_normalizes_stale_dict_state(self) -> None:
+        stale = {"cot": {"state": {"state": "unknown", "source": "not_connected"}, "label": "COT"}}
+        with patch.object(mi, "read_json", return_value=stale):
+            status, _ctype, body = self.get("/api/provider-health")
+        payload = json.loads(body)
+        assert status == 200
+        assert payload["cot"]["state"] == "unknown"
+        assert payload["cot"]["source"] == "not_connected"

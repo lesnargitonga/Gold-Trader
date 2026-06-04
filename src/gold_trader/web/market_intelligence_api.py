@@ -136,6 +136,24 @@ def _summary_payload() -> dict[str, Any]:
     }
 
 
+def _normalize_provider_health_payload(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            out[key] = value
+            continue
+        row = dict(value)
+        state = row.get("state")
+        if isinstance(state, dict):
+            row["state"] = str(state.get("state") or "unknown")
+            if not row.get("source") and state.get("source"):
+                row["source"] = state["source"]
+        out[key] = row
+    return out
+
+
 class Handler(SimpleHTTPRequestHandler):
     def _send_bytes(self, body: bytes, content_type: str, *, status: int = 200, cache: str = "no-store") -> None:
         self.send_response(status)
@@ -156,6 +174,7 @@ class Handler(SimpleHTTPRequestHandler):
             data = read_json(PROVIDER_HEALTH_PATH, {})
             if not data:
                 data = get_decision_for_api().get("provider_health_summary", {})
+            data = _normalize_provider_health_payload(data)
             return self.json({"ok": True, **data} if path == "/api/health" else data)
         if path == "/api/market-intelligence":
             return self.json(get_decision_for_api().get("market_intelligence_summary", {}))
