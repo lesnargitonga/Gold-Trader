@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+data/
+logs/
+reports/
+.run/
+.kilo/
+.qodo/
+config/secrets.json

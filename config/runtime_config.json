@@ -1,0 +1,9 @@
+{
+  "macro_filter_mode": "off",
+  "auto_trade_enabled": false,
+  "news_blackout_min": 0.0,
+  "bridge_url": "http://127.0.0.1:8765",
+  "bridge_secret": "73d882e70d977d7e0027377451980be255387e712be3186216513b00e28c3308",
+  "symbol": "XAUUSD",
+  "notes": ""
+}

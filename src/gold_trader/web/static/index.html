@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Gold Trader · Control Panel</title>
+<link rel="stylesheet" href="/static/styles.css">
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="brand">
+    <span class="brand-mark">XAU</span>
+    <span class="brand-name">Gold Trader</span>
+  </div>
+  <nav class="nav">
+    <button data-tab="live" class="active">Trade</button>
+    <button data-tab="controls">Settings</button>
+    <div class="nav-divider">
+      <button id="btn-toggle-adv" class="adv-toggle">Advanced ▾</button>
+    </div>
+    <div id="nav-advanced" class="nav-advanced hidden">
+      <button data-tab="dashboard">Dashboard</button>
+      <button data-tab="charts">Charts</button>
+      <button data-tab="bridge">MT5 Bridge</button>
+      <button data-tab="journal">Journal</button>
+      <button data-tab="risk">Risk</button>
+      <button data-tab="logs">Logs</button>
+      <button data-tab="lab">Strategy Lab</button>
+      <button data-tab="miner">Pattern Miner</button>
+      <button data-tab="macro">Macro</button>
+      <button data-tab="replay">Replay</button>
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    <div id="clock" class="clock">--:--:--</div>
+    <div id="server-info" class="muted small">v0.3 · live</div>
+  </div>
+</aside>
+
+<header class="topbar">
+  <div id="live-banner" class="live-banner banner-unknown">
+    <span class="banner-dot"></span>
+    <span id="banner-text">Checking connection…</span>
+    <span id="banner-detail" class="muted small"></span>
+  </div>
+  <div class="status-pills">
+    <span class="pill" id="pill-bridge">bridge: ?</span>
+    <span class="pill" id="pill-equity">equity: ?</span>
+    <span class="pill" id="pill-trades">trades: ?</span>
+    <span class="pill" id="pill-filter">filter: ?</span>
+    <span class="pill" id="pill-kill">kill: ?</span>
+  </div>
+  <div class="topbar-actions">
+    <button id="btn-refresh" class="ghost">Refresh</button>
+    <button id="btn-run-cycle" class="ghost topbar-advanced">Run agent-cycle</button>
+  </div>
+</header>
+
+<main class="content">
+
+<section id="cycle-run-panel" class="card cycle-panel hidden">
+  <div class="cycle-head">
+    <div>
+      <h2>Agent-cycle run</h2>
+      <div id="cycle-run-meta" class="muted small">No manual run yet</div>
+      <div class="cycle-legend muted small">OK = completed/healthy · ENTRY = setup/candidate · WAIT = caution/reject/hold · RISK = problem to check</div>
+    </div>
+    <span id="cycle-run-status" class="pill">idle</span>
+  </div>
+  <div class="grid-2 cycle-grid">
+    <div>
+      <h3>Current findings</h3>
+      <div id="cycle-run-findings" class="logbox compact-cycle-log"></div>
+    </div>
+    <div>
+      <h3>Run log</h3>
+      <div id="cycle-run-output" class="logbox compact-cycle-log"></div>
+    </div>
+  </div>
+</section>
+
+<!-- TRADE (clean default) -->
+<section class="tab" id="tab-live">
+  <div class="trade-grid">
+    <div class="trade-main">
+      <div class="card chart-card">
+        <div class="chart-toolbar">
+          <strong id="live-symbol-label">XAUUSD</strong>
+          <div class="tf-pills" id="live-tf-pills">
+            <button data-tf="1">M1</button>
+            <button data-tf="5">M5</button>
+            <button data-tf="15" class="active">M15</button>
+            <button data-tf="60">H1</button>
+            <button data-tf="240">H4</button>
+            <button data-tf="1440">D1</button>
+          </div>
+          <div class="chart-toggles">
+            <label class="check"><input type="checkbox" id="live-ind-ema" checked> EMA</label>
+            <label class="check"><input type="checkbox" id="live-ind-zones"> All zones</label>
+            <label class="check"><input type="checkbox" id="live-autoref" checked> Auto 5s</label>
+          </div>
+          <span id="live-chart-meta" class="muted small"></span>
+        </div>
+        <div id="live-level-nav" class="level-nav hidden" aria-label="Jump to trade levels"></div>
+        <div class="chart-legend" id="live-chart-legend">
+          <span class="leg ifvg-bear">IFVG supply</span>
+          <span class="leg ifvg-bull">IFVG demand</span>
+          <span class="leg trade-target">Target</span>
+          <span class="leg trade-risk">Risk</span>
+          <span class="leg options-level">Options / CME</span>
+        </div>
+        <div class="chart-stage">
+          <div id="live-zone-overlay" class="zone-overlay" aria-hidden="true"></div>
+          <div id="live-chart" class="chart-wrap large"></div>
+        </div>
+        <div id="live-zone-behavior" class="zone-behavior hidden"></div>
+        <div id="live-confluence-strip" class="confluence-strip hidden"></div>
+      </div>
+    </div>
+
+    <div class="trade-side">
+      <div id="broker-connection-card" class="card connection-card hidden">
+        <h2>Broker not connected yet</h2>
+        <p class="connection-lead">Starting automatically… If this stays yellow after ~30s, run <code>./start</code> from the project folder (starts MT5 + bridge + UI).</p>
+        <ol class="connection-steps">
+          <li id="conn-step-mt5"><span>MetaTrader 5 (Wine)</span><small>Terminal + broker login</small></li>
+          <li id="conn-step-bridge"><span>MT5 bridge</span><small>Port 8765</small></li>
+          <li id="conn-step-ready"><span>Live trading unlocked</span><small>Approve &amp; place enabled</small></li>
+        </ol>
+        <div class="connection-actions">
+          <button id="btn-start-bridge" class="primary">Retry connection</button>
+        </div>
+        <div id="connection-detail" class="muted small"></div>
+      </div>
+
+      <div class="card ifvg-hero">
+        <div class="hero-head">
+          <h2>IFVG setup</h2>
+          <span class="hero-approval">auto AI · you enter</span>
+        </div>
+        <div id="live-ifvg-assistant" class="ifvg-body"><span class="muted">Scanning…</span></div>
+      </div>
+
+      <div class="card compact-card">
+        <div class="compact-head">
+          <h2>Account &amp; position</h2>
+          <span class="auto-inline">
+            <span class="muted small">auto</span>
+            <span class="pill" id="live-auto-pill">?</span>
+            <button id="btn-toggle-auto" class="ghost small">Toggle</button>
+          </span>
+        </div>
+        <div id="live-account" class="kv-grid"><span class="muted">Connecting…</span></div>
+        <div id="live-position" class="position-block"><span class="muted">No position</span></div>
+      </div>
+
+      <details class="card details-card">
+        <summary>Session levels &amp; macro context</summary>
+        <div id="live-tracker" class="tracker-card"><span class="muted">Loading…</span></div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- DASHBOARD -->
+<section class="tab hidden" id="tab-dashboard">
+  <div class="grid-2">
+    <div class="card">
+      <h2>Live state</h2>
+      <div id="state-cards"></div>
+    </div>
+    <div class="card">
+      <h2>Journal — last 50</h2>
+      <div id="last50-stats" class="kv-grid"></div>
+      <div class="chart-wrap small" id="dash-equity"></div>
+    </div>
+  </div>
+  <div class="grid-2">
+    <div class="card">
+      <h2>Live things to note</h2>
+      <div id="dash-special-notes" class="logbox color-log notes-log"></div>
+    </div>
+    <div class="card">
+      <h2>Upcoming high-impact events</h2>
+      <div id="upcoming-events" class="table-wrap"></div>
+    </div>
+  </div>
+  <div class="grid-2">
+    <div class="card">
+      <h2>Recent agent decisions</h2>
+      <div id="dash-log-tail" class="logbox"></div>
+    </div>
+  </div>
+</section>
+
+<!-- CHARTS -->
+<section class="tab hidden" id="tab-charts">
+  <div class="card">
+    <div class="row">
+      <label>Dataset
+        <select id="chart-dataset"></select>
+      </label>
+      <label>Bars
+        <select id="chart-limit">
+          <option value="300">300</option>
+          <option value="600" selected>600</option>
+          <option value="1500">1500</option>
+          <option value="3000">3000</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="ind-ema20" checked> EMA20</label>
+      <label class="check"><input type="checkbox" id="ind-ema50" checked> EMA50</label>
+      <label class="check"><input type="checkbox" id="ind-ema200"> EMA200</label>
+      <label class="check"><input type="checkbox" id="ind-vwap" checked> Session VWAP</label>
+      <button id="btn-chart-load" class="primary">Load</button>
+      <span id="chart-meta" class="muted small"></span>
+    </div>
+    <div id="chart-candles" class="chart-wrap large"></div>
+    <div id="chart-volume" class="chart-wrap mini"></div>
+  </div>
+</section>
+
+<!-- BRIDGE -->
+<section class="tab hidden" id="tab-bridge">
+  <div class="grid-2">
+    <div class="card">
+      <h2>MT5 Bridge</h2>
+      <div id="bridge-status" class="kv-grid"></div>
+      <div class="row">
+        <button id="btn-bridge-refresh" class="primary">Refresh</button>
+        <span id="bridge-url" class="muted small"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Account</h2>
+      <div id="bridge-account" class="kv-grid"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Open position</h2>
+    <div id="bridge-position"></div>
+  </div>
+  <div class="card subtle">
+    <h3>Bridge URL configuration</h3>
+    <p class="muted">Set in your shell environment <em>before</em> starting agent-cycle and the UI:</p>
+    <pre class="codeblock">export GOLD_BROKER=mt5_remote
+export GOLD_BRIDGE_URL=http://127.0.0.1:8765
+export GOLD_BRIDGE_SECRET=&lt;shared secret&gt;</pre>
+    <p class="muted small">The UI itself runs on port <strong>8770</strong> to avoid colliding with the MT5 bridge on 8765.</p>
+  </div>
+</section>
+
+<!-- LAB -->
+<section class="tab hidden" id="tab-lab">
+  <div class="card">
+    <h2>Strategy Lab</h2>
+    <div class="row">
+      <label>Dataset <select id="lab-dataset"></select></label>
+      <label>Family <select id="lab-family"></select></label>
+      <label>Permutations
+        <select id="lab-nperm">
+          <option value="500">500 (fast)</option>
+          <option value="3000" selected>3000</option>
+          <option value="10000">10000</option>
+        </select>
+      </label>
+      <label>Holdout fraction
+        <input id="lab-holdout-frac" type="number" step="0.05" min="0.1" max="0.7" value="0.33">
+      </label>
+    </div>
+    <div class="row">
+      <button id="btn-lab-holdout" class="primary">Run holdout-eval</button>
+      <button id="btn-lab-perm">Run permutation-test</button>
+      <span id="lab-status" class="muted small"></span>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Job output</h2>
+    <pre id="lab-output" class="logbox"></pre>
+  </div>
+</section>
+
+<!-- MINER -->
+<section class="tab hidden" id="tab-miner">
+  <div class="grid-2">
+    <div class="card">
+      <h2>Run pattern mine-all</h2>
+      <label>Dataset <select id="miner-dataset"></select></label>
+      <div class="row">
+        <label>Timeframes <input id="miner-tfs" type="text" value="60,240"></label>
+        <label>Horizons <input id="miner-horizons" type="text" value="8,16"></label>
+      </div>
+      <div class="row">
+        <label>Combo size <input id="miner-combo" type="number" min="1" max="3" value="2"></label>
+        <label>Min signals <input id="miner-minsig" type="number" min="10" value="50"></label>
+        <label>Min effect-R <input id="miner-effect" type="number" step="0.05" value="0.10"></label>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="miner-macro" checked> with-macro</label>
+        <button id="btn-miner-run" class="primary">Launch mining job</button>
+      </div>
+      <pre id="miner-job" class="logbox"></pre>
+    </div>
+    <div class="card">
+      <h2>Existing runs</h2>
+      <button id="btn-miner-refresh" class="ghost small">Refresh</button>
+      <div id="miner-runs" class="table-wrap"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Survivors browser</h2>
+    <div class="row">
+      <span id="survivors-meta" class="muted small">Click a run above to load survivors</span>
+    </div>
+    <div id="survivors-table" class="table-wrap"></div>
+  </div>
+</section>
+
+<!-- MACRO -->
+<section class="tab hidden" id="tab-macro">
+  <div class="card">
+    <h2>Macro series</h2>
+    <div class="row">
+      <label>Series <select id="macro-name"></select></label>
+      <button id="btn-macro-load" class="primary">Load</button>
+      <button id="btn-macro-refresh" class="ghost">Refresh list</button>
+      <button id="btn-macro-sync" class="ghost">Sync from FRED</button>
+      <span id="macro-meta" class="muted small"></span>
+    </div>
+    <div id="chart-macro" class="chart-wrap large"></div>
+  </div>
+  <div class="card">
+    <h2>Catalog</h2>
+    <div id="macro-list" class="table-wrap"></div>
+  </div>
+</section>
+
+<!-- JOURNAL -->
+<section class="tab hidden" id="tab-journal">
+  <div class="card">
+    <div class="row">
+      <label>Verdict
+        <select id="jrn-verdict">
+          <option value="">all</option>
+          <option value="allow">allow</option>
+          <option value="allow_with_warning">allow_with_warning</option>
+          <option value="block">block</option>
+        </select>
+      </label>
+      <label>Family
+        <select id="jrn-family"><option value="">all</option></select>
+      </label>
+      <label>Side
+        <select id="jrn-side">
+          <option value="">all</option>
+          <option value="long">long</option>
+          <option value="short">short</option>
+        </select>
+      </label>
+      <label>Limit
+        <select id="jrn-limit">
+          <option>50</option><option selected>200</option><option>1000</option>
+        </select>
+      </label>
+      <button id="btn-jrn-load" class="primary">Apply filters</button>
+      <span id="jrn-stats" class="muted small"></span>
+    </div>
+    <div id="journal-table" class="table-wrap"></div>
+  </div>
+  <div class="card">
+    <h2>Filter lift &amp; regime buckets</h2>
+    <div id="journal-buckets"></div>
+  </div>
+</section>
+
+<!-- RISK -->
+<section class="tab hidden" id="tab-risk">
+  <div class="grid-2">
+    <div class="card">
+      <h2>Equity (cumulative R)</h2>
+      <div id="chart-equity" class="chart-wrap large"></div>
+      <div id="risk-summary" class="kv-grid"></div>
+    </div>
+    <div class="card">
+      <h2>Trades per day</h2>
+      <div id="trades-per-day" class="bar-list"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Kill switches</h2>
+    <div id="kill-switches"></div>
+  </div>
+</section>
+
+<!-- REPLAY -->
+<section class="tab hidden" id="tab-replay">
+  <div class="card">
+    <div class="row">
+      <label>Dataset <select id="replay-dataset"></select></label>
+      <label>Date <input id="replay-date" type="date"></label>
+      <button id="btn-replay-load" class="primary">Load day</button>
+      <span id="replay-meta" class="muted small"></span>
+    </div>
+    <div id="chart-replay" class="chart-wrap large"></div>
+  </div>
+  <div class="card">
+    <h2>Trades on this day</h2>
+    <div id="replay-trades" class="table-wrap"></div>
+  </div>
+</section>
+
+<!-- LOGS -->
+<section class="tab hidden" id="tab-logs">
+  <div class="card">
+    <h2>Logs</h2>
+    <div class="log-guide">
+      <span><strong>Live trading</strong> watch signals and entry alerts</span>
+      <span><strong>Agent decisions</strong> system verdicts and risk checks</span>
+      <span><strong>Connection</strong> MT5 bridge and UI health</span>
+      <span><strong>Research</strong> audits, sync, and validation jobs</span>
+    </div>
+    <div id="log-category-hub" class="log-category-hub"></div>
+    <div class="row">
+      <label>File <select id="log-file"></select></label>
+      <label>Lines
+        <select id="log-n">
+          <option>100</option><option selected>300</option><option>1000</option>
+        </select>
+      </label>
+      <button id="btn-log-load" class="primary">Load</button>
+      <button id="btn-log-tail" class="ghost">Auto-refresh</button>
+      <span id="log-meta" class="muted small"></span>
+    </div>
+    <div id="entry-log-strip" class="entry-log-strip"></div>
+    <div id="log-body" class="logbox tall color-log"></div>
+  </div>
+</section>
+
+<!-- CONTROLS -->
+<section class="tab hidden" id="tab-controls">
+  <div class="grid-2">
+    <div class="card">
+      <h2>Runtime config</h2>
+      <label>Macro filter mode
+        <select id="cfg-mode">
+          <option>off</option><option>soft</option><option>hard</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="cfg-auto"> Auto-trade enabled</label>
+      <label>News blackout window (minutes; 0 disables)
+        <input id="cfg-news-min" type="number" min="0" max="240" step="1" value="0">
+      </label>
+      <label>Notes
+        <textarea id="cfg-notes" rows="3"></textarea>
+      </label>
+      <hr class="sep">
+      <h3>API keys <span class="muted small">saved locally · rotate when testing ends</span></h3>
+      <label>OpenAI API key
+        <input id="cfg-openai-key" type="password" placeholder="sk-… (leave blank to keep current)">
+        <span class="muted small" id="cfg-openai-status"></span>
+      </label>
+      <label>MT5 bridge URL
+        <input id="cfg-bridge-url" type="text" placeholder="http://127.0.0.1:8765">
+      </label>
+      <label>MT5 bridge shared secret
+        <input id="cfg-bridge-secret" type="password" placeholder="(leave blank to keep current)">
+        <span class="muted small" id="cfg-secret-status"></span>
+      </label>
+      <label>Trading symbol
+        <input id="cfg-symbol" type="text" placeholder="XAUUSD" maxlength="20">
+      </label>
+      <div class="row">
+        <button id="btn-cfg-save" class="primary">Save config</button>
+        <button id="btn-clear-secrets" class="ghost">Clear saved keys</button>
+        <button id="btn-sync-macro" class="ghost">Sync macro</button>
+        <span id="cfg-status" class="muted small"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Economic calendar</h2>
+      <div class="row">
+        <label>Timestamp (UTC) <input id="cal-ts" type="datetime-local"></label>
+        <label>Event <input id="cal-event" type="text" maxlength="80" placeholder="NFP, CPI, FOMC..."></label>
+        <label>Impact
+          <select id="cal-impact">
+            <option value="high" selected>high</option>
+            <option value="medium">medium</option>
+            <option value="low">low</option>
+          </select>
+        </label>
+        <button id="btn-cal-add" class="primary">Add</button>
+      </div>
+      <div id="calendar-list" class="table-wrap"></div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<div id="log-detail-modal" class="modal-backdrop hidden" aria-hidden="true">
+  <div class="modal-card log-detail-card" role="dialog" aria-modal="true" aria-labelledby="log-detail-title">
+    <div class="modal-head">
+      <div>
+        <h2 id="log-detail-title">Log detail</h2>
+        <div id="log-detail-meta" class="muted small"></div>
+      </div>
+      <button id="btn-close-log-detail" class="ghost small">Close</button>
+    </div>
+    <div id="log-detail-body" class="log-detail-body"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

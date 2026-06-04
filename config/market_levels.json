@@ -1,0 +1,29 @@
+{
+  "description": "Manual gold levels used by the IFVG confluence assistant. Keep this local cache updated from CME/options, Investing.com, and operator levels. Missing or stale levels are treated as neutral by the assistant.",
+  "levels": [
+    {
+      "price": 4350,
+      "kind": "round",
+      "label": "4350 round / options reference",
+      "strength": 1.0
+    },
+    {
+      "price": 4400,
+      "kind": "round",
+      "label": "4400 round / options reference",
+      "strength": 1.0
+    },
+    {
+      "price": 4450,
+      "kind": "round",
+      "label": "4450 round / options reference",
+      "strength": 1.0
+    },
+    {
+      "price": 4500,
+      "kind": "round",
+      "label": "4500 round / options reference",
+      "strength": 1.0
+    }
+  ]
+}

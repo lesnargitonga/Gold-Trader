@@ -1,0 +1,315 @@
+{
+  "family": "ny_session_breakout",
+  "n_total": 7,
+  "base_win_rate": 0.14285714285714285,
+  "base_avg_r": -0.45046129980836974,
+  "base_expectancy": -0.4504612998083697,
+  "base_profit_factor": 0.2612944105002541,
+  "single_slices": [
+    {
+      "key": "dow=tue",
+      "dimensions": [
+        "dow"
+      ],
+      "values": [
+        "tue"
+      ],
+      "n": 2,
+      "wins": 1,
+      "losses": 1,
+      "win_rate": 0.5,
+      "avg_r": 0.25818788142528437,
+      "expectancy": 0.25818788142528437,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.5989821689395582,
+      "lower_ci_r": -1.421865417289807,
+      "profit_factor": 1.8620887058537379
+    },
+    {
+      "key": "session_vwap=above",
+      "dimensions": [
+        "session_vwap"
+      ],
+      "values": [
+        "above"
+      ],
+      "n": 3,
+      "wins": 1,
+      "losses": 2,
+      "win_rate": 0.3333333333333333,
+      "avg_r": 0.003208226729923149,
+      "expectancy": 0.0032082267299231026,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.5528666258001788,
+      "lower_ci_r": -1.2089058450436365,
+      "profit_factor": 1.0087043418255166
+    },
+    {
+      "key": "side=long",
+      "dimensions": [
+        "side"
+      ],
+      "values": [
+        "long"
+      ],
+      "n": 3,
+      "wins": 1,
+      "losses": 2,
+      "win_rate": 0.3333333333333333,
+      "avg_r": 0.003208226729923149,
+      "expectancy": 0.0032082267299231026,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.5528666258001788,
+      "lower_ci_r": -1.2089058450436365,
+      "profit_factor": 1.0087043418255166
+    },
+    {
+      "key": "spread=normal",
+      "dimensions": [
+        "spread"
+      ],
+      "values": [
+        "normal"
+      ],
+      "n": 3,
+      "wins": 1,
+      "losses": 2,
+      "win_rate": 0.3333333333333333,
+      "avg_r": -0.14334558240815434,
+      "expectancy": -0.14334558240815448,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.772697339507295,
+      "lower_ci_r": -1.408468631297608,
+      "profit_factor": 0.7217301488971911
+    },
+    {
+      "key": "compression=expanding",
+      "dimensions": [
+        "compression"
+      ],
+      "values": [
+        "expanding"
+      ],
+      "n": 5,
+      "wins": 1,
+      "losses": 4,
+      "win_rate": 0.2,
+      "avg_r": -0.409618058143697,
+      "expectancy": -0.409618058143697,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.790862055627153,
+      "lower_ci_r": -1.1837305504158524,
+      "profit_factor": 0.3525766357906908
+    },
+    {
+      "key": "dow=thu",
+      "dimensions": [
+        "dow"
+      ],
+      "values": [
+        "thu"
+      ],
+      "n": 2,
+      "wins": 0,
+      "losses": 2,
+      "win_rate": 0.0,
+      "avg_r": -0.772697339507295,
+      "expectancy": -0.772697339507295,
+      "avg_win_r": 0.0,
+      "avg_loss_r": -0.772697339507295,
+      "lower_ci_r": -1.2593433294048348,
+      "profit_factor": 0.0
+    },
+    {
+      "key": "trend=flat",
+      "dimensions": [
+        "trend"
+      ],
+      "values": [
+        "flat"
+      ],
+      "n": 5,
+      "wins": 1,
+      "losses": 4,
+      "win_rate": 0.2,
+      "avg_r": -0.4940188463284219,
+      "expectancy": -0.49401884632842197,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.8963630408580591,
+      "lower_ci_r": -1.3047684436493208,
+      "profit_factor": 0.3110787373390672
+    },
+    {
+      "key": "session=new_york",
+      "dimensions": [
+        "session"
+      ],
+      "values": [
+        "new_york"
+      ],
+      "n": 7,
+      "wins": 1,
+      "losses": 6,
+      "win_rate": 0.14285714285714285,
+      "avg_r": -0.45046129980836974,
+      "expectancy": -0.4504612998083697,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.7114311717414524,
+      "lower_ci_r": -1.0233186749324403,
+      "profit_factor": 0.2612944105002541
+    },
+    {
+      "key": "hour_bucket=12-18",
+      "dimensions": [
+        "hour_bucket"
+      ],
+      "values": [
+        "12-18"
+      ],
+      "n": 7,
+      "wins": 1,
+      "losses": 6,
+      "win_rate": 0.14285714285714285,
+      "avg_r": -0.45046129980836974,
+      "expectancy": -0.4504612998083697,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.7114311717414524,
+      "lower_ci_r": -1.0233186749324403,
+      "profit_factor": 0.2612944105002541
+    },
+    {
+      "key": "vol_pct=high",
+      "dimensions": [
+        "vol_pct"
+      ],
+      "values": [
+        "high"
+      ],
+      "n": 7,
+      "wins": 1,
+      "losses": 6,
+      "win_rate": 0.14285714285714285,
+      "avg_r": -0.45046129980836974,
+      "expectancy": -0.4504612998083697,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.7114311717414524,
+      "lower_ci_r": -1.0233186749324403,
+      "profit_factor": 0.2612944105002541
+    },
+    {
+      "key": "macro_real10y=unknown",
+      "dimensions": [
+        "macro_real10y"
+      ],
+      "values": [
+        "unknown"
+      ],
+      "n": 7,
+      "wins": 1,
+      "losses": 6,
+      "win_rate": 0.14285714285714285,
+      "avg_r": -0.45046129980836974,
+      "expectancy": -0.4504612998083697,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.7114311717414524,
+      "lower_ci_r": -1.0233186749324403,
+      "profit_factor": 0.2612944105002541
+    },
+    {
+      "key": "macro_dxy=unknown",
+      "dimensions": [
+        "macro_dxy"
+      ],
+      "values": [
+        "unknown"
+      ],
+      "n": 7,
+      "wins": 1,
+      "losses": 6,
+      "win_rate": 0.14285714285714285,
+      "avg_r": -0.45046129980836974,
+      "expectancy": -0.4504612998083697,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.7114311717414524,
+      "lower_ci_r": -1.0233186749324403,
+      "profit_factor": 0.2612944105002541
+    },
+    {
+      "key": "macro_vix=unknown",
+      "dimensions": [
+        "macro_vix"
+      ],
+      "values": [
+        "unknown"
+      ],
+      "n": 7,
+      "wins": 1,
+      "losses": 6,
+      "win_rate": 0.14285714285714285,
+      "avg_r": -0.45046129980836974,
+      "expectancy": -0.4504612998083697,
+      "avg_win_r": 1.115357931790127,
+      "avg_loss_r": -0.7114311717414524,
+      "lower_ci_r": -1.0233186749324403,
+      "profit_factor": 0.2612944105002541
+    },
+    {
+      "key": "spread=wide",
+      "dimensions": [
+        "spread"
+      ],
+      "values": [
+        "wide"
+      ],
+      "n": 3,
+      "wins": 0,
+      "losses": 3,
+      "win_rate": 0.0,
+      "avg_r": -0.8796798844524014,
+      "expectancy": -0.8796798844524014,
+      "avg_win_r": 0.0,
+      "avg_loss_r": -0.8796798844524014,
+      "lower_ci_r": -1.154769250574008,
+      "profit_factor": 0.0
+    },
+    {
+      "key": "session_vwap=below",
+      "dimensions": [
+        "session_vwap"
+      ],
+      "values": [
+        "below"
+      ],
+      "n": 4,
+      "wins": 0,
+      "losses": 4,
+      "win_rate": 0.0,
+      "avg_r": -0.7907134447120894,
+      "expectancy": -0.7907134447120894,
+      "avg_win_r": 0.0,
+      "avg_loss_r": -0.7907134447120894,
+      "lower_ci_r": -1.05158549008292,
+      "profit_factor": 0.0
+    },
+    {
+      "key": "side=short",
+      "dimensions": [
+        "side"
+      ],
+      "values": [
+        "short"
+      ],
+      "n": 4,
+      "wins": 0,
+      "losses": 4,
+      "win_rate": 0.0,
+      "avg_r": -0.7907134447120894,
+      "expectancy": -0.7907134447120894,
+      "avg_win_r": 0.0,
+      "avg_loss_r": -0.7907134447120894,
+      "lower_ci_r": -1.05158549008292,
+      "profit_factor": 0.0
+    }
+  ],
+  "pair_slices": []
+}

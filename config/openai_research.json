@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "mode": "soft",
+  "model": "gpt-5.4",
+  "cache_minutes": 10,
+  "max_calls_per_hour": 12,
+  "min_ifvg_score_to_research": 65,
+  "block_on_high_news_risk": false,
+  "block_if_external_context_opposes_trade": false
+}

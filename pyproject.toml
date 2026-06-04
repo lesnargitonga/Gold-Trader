@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gold-trader"
+version = "0.1.0"
+description = "Research-first XAUUSD trading framework with deterministic backtests and walk-forward validation."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "GitHub Copilot" }]
+dependencies = ["matplotlib>=3.9,<4", "openai>=1.0.0"]
+
+[project.scripts]
+gold-trader = "gold_trader.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
