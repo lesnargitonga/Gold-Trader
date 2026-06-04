@@ -26,7 +26,8 @@ monitoring, research, and operator controls. Cron drives the loop.
 > **System hardening v2:** [docs/SYSTEM_HARDENING_V2.md](docs/SYSTEM_HARDENING_V2.md) ·
 > **Market intelligence UX (Render):** [docs/MARKET_INTELLIGENCE_UX.md](docs/MARKET_INTELLIGENCE_UX.md) ·
 > **Live pipeline repair:** [docs/LIVE_PIPELINE_REPAIR.md](docs/LIVE_PIPELINE_REPAIR.md) ·
-> **Live pipeline repair v3:** [docs/LIVE_PIPELINE_REPAIR_V3.md](docs/LIVE_PIPELINE_REPAIR_V3.md)
+> **Live pipeline repair v3:** [docs/LIVE_PIPELINE_REPAIR_V3.md](docs/LIVE_PIPELINE_REPAIR_V3.md) ·
+> **Live pipeline polish v4:** [docs/LIVE_PIPELINE_POLISH_V4.md](docs/LIVE_PIPELINE_POLISH_V4.md)
 
 ---
 

@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -61,6 +62,18 @@ TWELVE_INTERVALS = {
     "H1": "1h",
     "H4": "4h",
     "D1": "1day",
+}
+
+# Some Twelve Data/free-plan combinations fail on large M1 pulls.
+# Keep M1 smaller and cache-aware rather than publishing 0-candle state.
+FETCH_COUNTS = {
+    "M1": int(os.getenv("GOLD_TWELVE_M1_CANDLES", "120")),
+    "M5": int(os.getenv("GOLD_TWELVE_M5_CANDLES", "220")),
+    "M15": int(os.getenv("GOLD_TWELVE_M15_CANDLES", "280")),
+    "M30": int(os.getenv("GOLD_TWELVE_M30_CANDLES", "280")),
+    "H1": int(os.getenv("GOLD_TWELVE_H1_CANDLES", "300")),
+    "H4": int(os.getenv("GOLD_TWELVE_H4_CANDLES", "300")),
+    "D1": int(os.getenv("GOLD_TWELVE_D1_CANDLES", "300")),
 }
 
 
@@ -137,9 +150,32 @@ def http_get_text(url: str, timeout: int = 25) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
-def fetch_twelve_candles_direct(tf: str, count: int = 280) -> tuple[list[dict[str, Any]], str | None]:
+def cache_path_for_tf(tf: str) -> Path:
+    return DATA / "cache" / "twelvedata" / f"{twelve_symbol().replace('/', '_')}_{tf.upper()}.json"
+
+
+def read_cached_candles(tf: str, max_age_seconds: int = 900) -> list[dict[str, Any]]:
+    payload = read_json(cache_path_for_tf(tf), {})
+    if not isinstance(payload, dict):
+        return []
+    updated = parse_time(payload.get("updated_at"))
+    if not updated:
+        return []
+    if (now_utc() - updated).total_seconds() > max_age_seconds:
+        return []
+    candles = payload.get("candles")
+    return candles if isinstance(candles, list) else []
+
+
+def write_cached_candles(tf: str, candles: list[dict[str, Any]]) -> None:
+    write_json(cache_path_for_tf(tf), {"updated_at": iso_now(), "tf": tf.upper(), "symbol": twelve_symbol(), "candles": candles})
+
+
+def fetch_twelve_candles_direct(tf: str, count: int | None = None) -> tuple[list[dict[str, Any]], str | None]:
     key = api_key("TWELVE_DATA_API_KEY")
-    interval = TWELVE_INTERVALS.get(tf.upper())
+    tf = tf.upper()
+    interval = TWELVE_INTERVALS.get(tf)
+    count = count or FETCH_COUNTS.get(tf, 280)
     if not key:
         return [], "TWELVE_DATA_API_KEY missing"
     if not interval:
@@ -156,14 +192,21 @@ def fetch_twelve_candles_direct(tf: str, count: int = 280) -> tuple[list[dict[st
     try:
         raw = http_get_text(url)
     except Exception as exc:
+        cached = read_cached_candles(tf)
+        if cached:
+            return cached, f"using cached candles after fetch error: {exc!r}"
         return [], repr(exc)
 
     if raw.lstrip().startswith("{"):
         try:
             payload = json.loads(raw)
-            return [], str(payload.get("message") or payload)
+            error = str(payload.get("message") or payload)
         except Exception:
-            return [], raw[:300]
+            error = raw[:300]
+        cached = read_cached_candles(tf)
+        if cached:
+            return cached, f"using cached candles after API error: {error}"
+        return [], error
 
     candles: list[dict[str, Any]] = []
     for row in csv.DictReader(io.StringIO(raw)):
@@ -181,16 +224,21 @@ def fetch_twelve_candles_direct(tf: str, count: int = 280) -> tuple[list[dict[st
         except Exception:
             continue
     candles.reverse()
+    if candles:
+        write_cached_candles(tf, candles)
     return candles, None if candles else "empty candle response"
 
 
-def fetch_twelve_candles(tf: str, count: int = 280) -> tuple[list[dict[str, Any]], str | None]:
-    # Prefer the repo's already-working provider if present. This avoids divergence from /api/candles.
+def fetch_twelve_candles(tf: str, count: int | None = None) -> tuple[list[dict[str, Any]], str | None]:
+    tf = tf.upper()
+    count = count or FETCH_COUNTS.get(tf, 280)
+
     try:
         from gold_trader.data.twelvedata import fetch_candles  # type: ignore
 
-        candles = fetch_candles(tf.upper(), symbol=twelve_symbol(), count=count, repo=ROOT)
+        candles = fetch_candles(tf, symbol=twelve_symbol(), count=count, repo=ROOT)
         if candles:
+            write_cached_candles(tf, candles)
             return candles, None
     except Exception as exc:
         provider_error = repr(exc)
@@ -219,7 +267,6 @@ def fetch_twelve_quote() -> dict[str, Any]:
         }
 
     if not isinstance(payload, dict) or payload.get("status") == "error" or payload.get("code"):
-        # Quote endpoint is not fatal because candles may still work.
         return {
             "state": "unknown_nonfatal_in_paper",
             "source": "twelvedata",
@@ -343,7 +390,7 @@ def fetch_fmp_calendar() -> dict[str, Any]:
 
 def compute_macro_state(calendar: dict[str, Any]) -> dict[str, Any]:
     if calendar.get("state") in {"missing_key", "error"}:
-        return {"state": "unknown", "source": "fmp", "blockers": ["macro feed unavailable"], "updated_at": iso_now()}
+        return {"state": "unknown", "source": "fmp", "blockers": ["macro feed unavailable"], "updated_at": iso_now(), "error": calendar.get("error")}
 
     events = calendar.get("events") or []
     if not events:
@@ -437,7 +484,6 @@ def load_best_decision() -> dict[str, Any]:
             "blockers": ["decision engine has not written state yet"],
         }
 
-    # Do not let a placeholder data/state.json clobber a real engine decision.
     return max(candidates, key=decision_quality)
 
 
@@ -470,7 +516,7 @@ def repair_timeframe_candles(decision: dict[str, Any]) -> dict[str, str]:
             reads.append(row)
 
         if int(row.get("candles") or 0) <= 0:
-            candles, error = fetch_twelve_candles(tf, count=280)
+            candles, error = fetch_twelve_candles(tf)
             if candles:
                 row["candles"] = len(candles)
                 row["current_price"] = float(candles[-1]["close"])
@@ -481,8 +527,10 @@ def repair_timeframe_candles(decision: dict[str, Any]) -> dict[str, str]:
                 row["warnings"] = warnings
             else:
                 fetch_errors[tf] = error or "unknown candle fetch error"
+                # Do not leave a fake 0 row unqualified.
+                row["data_state"] = "unavailable"
+                row["warnings"] = list(dict.fromkeys((row.get("warnings") or []) + [f"Twelve Data unavailable for {tf}: {fetch_errors[tf]}"]))
 
-    # If current price is missing, use the latest repaired/read candle.
     if decision.get("current_price") is None:
         for tf in ("M1", "M5", "M15", "H1", "H4", "D1"):
             row = next((r for r in reads if str(r.get("timeframe", "")).upper() == tf), None)
@@ -506,8 +554,13 @@ def alignment_audit(decision: dict[str, Any]) -> dict[str, Any]:
 
     for row in reads:
         tf = str(row.get("timeframe") or "").upper()
+        candles = int(row.get("candles") or 0)
         bias = str(row.get("bias") or "unknown").lower()
         ifvg = str(row.get("ifvg_side") or "none").lower()
+        if candles <= 0:
+            tf_align[tf] = "unavailable"
+            continue
+
         if ifvg not in {"none", "", "unknown"}:
             active_ifvg += 1
 
@@ -532,7 +585,8 @@ def alignment_audit(decision: dict[str, Any]) -> dict[str, Any]:
         "tf_align": tf_align,
         "aligned_count": len(aligned),
         "aligned_timeframes": aligned,
-        "total_timeframes": len(reads),
+        "total_timeframes": len([r for r in reads if int((r or {}).get("candles") or 0) > 0]),
+        "expected_timeframes": 7,
         "htf_aligned": htf_count,
         "htf_total": 3,
         "active_ifvg_reads": active_ifvg,
@@ -540,6 +594,21 @@ def alignment_audit(decision: dict[str, Any]) -> dict[str, Any]:
         "entry_displacement_confirmed": entry_displacement,
         "liquidity_confirmed": liquidity,
     }
+
+
+def clean_blocker_text(text: str) -> str:
+    text = text.strip()
+    replacements = {
+        "session off_peak not in allowed sessions ['london', 'london_new_york_overlap', 'new_york']": "Current session is off-peak. Allowed: London, London/New York overlap, New York.",
+        "Current session is off peak. Allowed: London, London/New York overlap, New York.": "Current session is off-peak. Allowed: London, London/New York overlap, New York.",
+        "volatility state is dead": "M15 volatility is compressed; avoid chasing until range expands.",
+        "no aligned liquidity sweep or displacement": "No aligned liquidity sweep/displacement confirmation yet.",
+        "no aligned liquidity sweep or displacement context": "No aligned liquidity sweep/displacement confirmation yet.",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = re.sub(r"\s+", " ", text)
+    return text
 
 
 def harden_scores(decision: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -555,11 +624,13 @@ def harden_scores(decision: dict[str, Any], context: dict[str, Any]) -> dict[str
     hard_blocks: list[str] = []
     soft_blocks: list[str] = []
 
-    align_score = min(25, round((audit["aligned_count"] / 7) * 25)) if audit["total_timeframes"] else 0
+    align_score = min(25, round((audit["aligned_count"] / 7) * 25))
     if audit["aligned_count"] < 5:
         hard_blocks.append(f"only {audit['aligned_count']}/7 timeframes align; required: 5")
     if audit["htf_aligned"] < 2:
         hard_blocks.append(f"only {audit['htf_aligned']}/3 higher timeframes align; required: 2")
+    if audit["total_timeframes"] < audit["expected_timeframes"]:
+        missing.append(f"{audit['expected_timeframes'] - audit['total_timeframes']} timeframe candle feed missing")
 
     geometry_score = 0
     if audit["entry_ifvg_confirmed"]:
@@ -573,7 +644,7 @@ def harden_scores(decision: dict[str, Any], context: dict[str, Any]) -> dict[str
     if audit["liquidity_confirmed"]:
         geometry_score += 5
     else:
-        hard_blocks.append("no aligned liquidity sweep or displacement context")
+        hard_blocks.append("No aligned liquidity sweep/displacement confirmation yet.")
 
     macro_state = str(macro.get("state", "unknown")).lower()
     if macro_state in {"clear", "ok", "ok_no_high_impact"}:
@@ -630,6 +701,7 @@ def harden_scores(decision: dict[str, Any], context: dict[str, Any]) -> dict[str
         vol_score = 10
     elif vol_state in {"compressed", "high", "extreme"}:
         vol_score = 5
+        soft_blocks.append("M15 volatility is compressed; avoid chasing until range expands." if vol_state == "compressed" else f"M15 volatility is {vol_state}.")
     else:
         vol_score = 0
         missing.append("Volatility state missing")
@@ -640,6 +712,7 @@ def harden_scores(decision: dict[str, Any], context: dict[str, Any]) -> dict[str
     penalty += 8 if any("Sentiment" in item or "Fresh sentiment" in item for item in missing) else 0
     penalty += 7 if any("Spread" in item for item in missing) else 0
     penalty += 5 if any("Volatility" in item for item in missing) else 0
+    penalty += 5 if any("timeframe" in item for item in missing) else 0
 
     stamp = parse_time(decision.get("timestamp_utc"))
     age = int((now_utc() - stamp).total_seconds()) if stamp else None
@@ -670,6 +743,8 @@ def harden_scores(decision: dict[str, Any], context: dict[str, Any]) -> dict[str
         watching_for.append("macro feed healthy")
     if any("Spread" in item for item in missing):
         watching_for.append("spread feed healthy")
+    if any("timeframe" in item for item in missing):
+        watching_for.append("missing timeframe data restored")
 
     return {
         "score_decomposition": {
@@ -683,8 +758,8 @@ def harden_scores(decision: dict[str, Any], context: dict[str, Any]) -> dict[str
         "score_raw": raw,
         "data_quality_penalty": penalty,
         "missing_inputs": list(dict.fromkeys(missing)),
-        "hard_blocks": list(dict.fromkeys(hard_blocks)),
-        "soft_blocks": list(dict.fromkeys(soft_blocks)),
+        "hard_blocks": list(dict.fromkeys(clean_blocker_text(x) for x in hard_blocks)),
+        "soft_blocks": list(dict.fromkeys(clean_blocker_text(x) for x in soft_blocks)),
         "watching_for": list(dict.fromkeys(watching_for)),
         "tf_alignment_audit": audit,
         "source_age_seconds": age,
@@ -698,6 +773,7 @@ def harden_scores(decision: dict[str, Any], context: dict[str, Any]) -> dict[str
 def build_provider_health(decision: dict[str, Any], context: dict[str, Any], fetch_errors: dict[str, str]) -> dict[str, Any]:
     reads = decision.get("timeframe_reads") or []
     candle_total = sum(int(row.get("candles") or 0) for row in reads)
+    candle_tfs = {str(row.get("timeframe")).upper(): int(row.get("candles") or 0) for row in reads}
 
     stamp = parse_time(decision.get("timestamp_utc"))
     age = int((now_utc() - stamp).total_seconds()) if stamp else None
@@ -715,6 +791,7 @@ def build_provider_health(decision: dict[str, Any], context: dict[str, Any], fet
             "state": "ok" if candle_total > 0 else "error",
             "label": "Twelve Data candles",
             "candles_loaded": candle_total,
+            "candles_by_timeframe": candle_tfs,
             "symbol": twelve_symbol(),
             "fetch_errors": fetch_errors,
         },
@@ -722,6 +799,7 @@ def build_provider_health(decision: dict[str, Any], context: dict[str, Any], fet
             "state": context["macro_state"].get("state", "unknown"),
             "label": "FMP macro calendar",
             "next_event": context["macro_state"].get("next_event"),
+            "error": context["macro_state"].get("error"),
         },
         "finnhub_sentiment": {
             "state": context["sentiment_state"].get("state", "unknown"),
@@ -738,6 +816,7 @@ def build_provider_health(decision: dict[str, Any], context: dict[str, Any], fet
             "state": context["volatility_state"].get("state", "unknown"),
             "label": "M15 ATR volatility",
             "atr": context["volatility_state"].get("atr"),
+            "atr_pct": context["volatility_state"].get("atr_pct"),
         },
         "ctrader": {"state": "connected" if api_key("CTRADER_ACCESS_TOKEN") else "pending", "label": "cTrader broker"},
         "cme": {"state": "connected" if api_key("CME_API_KEY") else "not_connected", "label": "CME futures/options"},
@@ -802,10 +881,7 @@ def repair_and_harden() -> dict[str, Any]:
     for item in (decision.get("blockers") or []) + hardened["hard_blocks"] + hardened["soft_blocks"]:
         if not item:
             continue
-        text = str(item).replace(
-            "session off_peak not in allowed sessions ['london', 'london_new_york_overlap', 'new_york']",
-            "Current session is off-peak. Allowed: London, London/New York overlap, New York.",
-        )
+        text = clean_blocker_text(str(item))
         if text not in blockers:
             blockers.append(text)
     decision["blockers"] = blockers
