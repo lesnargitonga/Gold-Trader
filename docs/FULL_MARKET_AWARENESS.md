@@ -41,7 +41,13 @@ logs/cross_market_state.json
 
 ## Render start command
 
-Use this after applying the patch:
+Recommended (React UI + full context scout):
+
+```bash
+PYTHONPATH=src python3 scripts/render_react_command_center.py
+```
+
+Python-only UI:
 
 ```bash
 PYTHONPATH=src python3 scripts/render_absolute_gold_full_context.py
