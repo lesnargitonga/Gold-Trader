@@ -30,7 +30,7 @@ def load_secrets(path: Path | None = None) -> dict[str, str]:
     if not isinstance(data, dict):
         return {}
     out: dict[str, str] = {}
-    for key in ("openai_api_key", "bridge_secret"):
+    for key in ("openai_api_key", "bridge_secret", "twelve_data_api_key"):
         val = data.get(key)
         if isinstance(val, str) and val.strip():
             out[key] = val.strip()
@@ -54,6 +54,10 @@ def save_secrets(
         current.pop("bridge_secret", None)
     elif isinstance(updates.get("bridge_secret"), str) and updates["bridge_secret"].strip():
         current["bridge_secret"] = updates["bridge_secret"].strip()[:200]
+    if updates.get("clear_twelve_data_api_key"):
+        current.pop("twelve_data_api_key", None)
+    elif isinstance(updates.get("twelve_data_api_key"), str) and updates["twelve_data_api_key"].strip():
+        current["twelve_data_api_key"] = updates["twelve_data_api_key"].strip()[:200]
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(current, indent=2, sort_keys=True))
     tmp.replace(p)
@@ -65,6 +69,13 @@ def resolve_openai_api_key(*, path: Path | None = None) -> str:
     if env:
         return env
     return load_secrets(path).get("openai_api_key", "")
+
+
+def resolve_twelve_data_api_key(*, path: Path | None = None) -> str:
+    env = os.environ.get("TWELVE_DATA_API_KEY", "").strip()
+    if env:
+        return env
+    return load_secrets(path).get("twelve_data_api_key", "")
 
 
 def resolve_bridge_secret(*, path: Path | None = None, runtime_fallback: str = "") -> str:

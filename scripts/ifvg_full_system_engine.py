@@ -170,11 +170,38 @@ def read_csv_fallback(symbol: str, timeframe: str, limit: int = 500) -> list[Can
         return out[-limit:]
     return []
 
+def fetch_twelvedata(symbol: str, timeframe: str, limit: int = 500) -> list[Candle]:
+    try:
+        from gold_trader.data.twelvedata import fetch_twelvedata_candles, twelvedata_configured
+    except ImportError:
+        return []
+    if not twelvedata_configured():
+        return []
+    rows = fetch_twelvedata_candles(symbol, timeframe, limit=limit, repo=REPO)
+    return [
+        Candle(
+            str(r["time"]),
+            float(r["open"]),
+            float(r["high"]),
+            float(r["low"]),
+            float(r["close"]),
+            float(r.get("volume", 0) or 0),
+        )
+        for r in rows
+    ]
+
+
 def load_candles(symbol: str, timeframe: str, limit: int = 500) -> list[Candle]:
     try:
-        return fetch_candles(symbol, timeframe, limit)
+        candles = fetch_candles(symbol, timeframe, limit)
+        if candles:
+            return candles
     except Exception:
-        return read_csv_fallback(symbol, timeframe, limit)
+        pass
+    candles = fetch_twelvedata(symbol, timeframe, limit)
+    if candles:
+        return candles
+    return read_csv_fallback(symbol, timeframe, limit)
 
 def atr(candles: list[Candle], period: int = 14) -> float:
     if len(candles) < period + 1: return 0.0

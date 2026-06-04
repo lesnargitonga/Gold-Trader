@@ -12,6 +12,7 @@ This patch keeps the bot simple where it matters: **IFVG is the only execution t
 - Max 3 trades per UTC day
 - Max 1 open position
 - Stop after 2 losses
+- Candle data: MT5 bridge (local) → **Twelve Data** (cloud) → CSV cache fallback
 - Spread filter from MT5 bridge tick data when available
 - Session filter: London, New York, and overlap by default
 - M15 volatility filter
@@ -51,6 +52,26 @@ Score range is `-1.0` to `1.0`.
 ```
 
 CSV also works with columns like `time_utc,currency,impact,name`.
+
+## Twelve Data (Render / cloud)
+
+Set an API key (free tier works for paper scouting):
+
+```text
+TWELVE_DATA_API_KEY=your_key
+```
+
+Optional:
+
+```text
+GOLD_TWELVE_DATA_SYMBOL=XAU/USD
+GOLD_TWELVE_DATA_CACHE_SECONDS=120
+```
+
+Or store in `config/secrets.json` as `twelve_data_api_key`.
+
+The full-system engine maps `XAUUSD` / `GOLD` → `XAU/USD` and loads `D1` … `M1` via
+`src/gold_trader/data/twelvedata.py` when the MT5 bridge is offline.
 
 ## Run
 
