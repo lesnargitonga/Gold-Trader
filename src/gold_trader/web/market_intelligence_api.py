@@ -17,6 +17,68 @@ _PKG_ROOT = Path(__file__).resolve().parents[3]
 ROOT = Path(os.getenv("GOLD_TRADER_ROOT", os.getenv("GOLD_RUNTIME_ROOT", str(_PKG_ROOT)))).resolve()
 COMMAND_CENTER_JS = _PKG_ROOT / "frontend" / "market_intelligence" / "command_center.js"
 
+
+def _base_candidates() -> list[Path]:
+    bases: list[Path] = []
+    for raw in (
+        os.getenv("GOLD_TRADER_ROOT"),
+        os.getenv("GOLD_RUNTIME_ROOT"),
+        os.getenv("RENDER_PROJECT_DIR"),
+        os.getenv("PWD"),
+        str(Path.cwd()),
+        str(ROOT),
+        str(_PKG_ROOT),
+        "/opt/render/project/src",
+    ):
+        if not raw:
+            continue
+        try:
+            base = Path(raw).resolve()
+        except OSError:
+            continue
+        if base not in bases:
+            bases.append(base)
+    return bases
+
+
+def _command_center_js_candidates() -> list[Path]:
+    paths = [COMMAND_CENTER_JS]
+    for base in _base_candidates():
+        candidate = base / "frontend" / "market_intelligence" / "command_center.js"
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def _fallback_command_center_js() -> bytes:
+    return """(function(){
+  'use strict';
+  var root=document.getElementById('root');
+  function esc(v){return String(v==null?'':v).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+  function get(path){return fetch(path,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error(path+' '+r.status);return r.json();});}
+  function render(decision,health,candles,error){
+    var d=decision||{}, h=health||{}, c=candles||{};
+    root.innerHTML='<div class="app"><aside class="side"><div class="brand"><div class="coin"></div><div><h1>Gold Trader</h1><p>COMMAND CENTER</p></div></div><div class="mini">Verdict <b>'+esc((d.action||'WAIT').replace(/_/g,' '))+'</b><br/>Score <b>'+esc(d.final_score||0)+'/100</b><br/>Mode <b>'+esc(((d.cloud_status||{}).execution_mode)||'paper')+'</b></div></aside><main class="main"><div class="top"><div class="title"><h2>Gold Trader Command Center</h2><p>Full-system IFVG analysis, market awareness, and execution safety.</p></div><div class="chips"><span class="chip">Symbol <b>'+esc(d.symbol||'XAUUSD')+'</b></span><span class="chip">Data <b>'+esc(((d.cloud_status||{}).data_provider)||'twelvedata')+'</b></span><span class="chip lock">Orders <b>'+esc(d.live_orders_enabled?'open':'locked')+'</b></span><button class="chip ok" id="retry">Refresh</button></div></div><section class="card hero"><div class="heroRow"><div><div class="label">Live Verdict</div><div class="verdict">'+esc((d.action||'WAIT').replace(/_/g,' '))+'</div><div class="meta">Grade '+esc(d.final_grade||'--')+' · '+esc((d.side||'none').toUpperCase())+'</div><div class="brief">'+esc(d.next_update||error||'Waiting for a fresh full-system scan.')+'</div></div><div class="scoreRing" style="--score:'+Math.max(0,Math.min(100,Number(d.final_score||0)))+'"><div class="scoreInner"><div><strong>'+esc(d.final_score||0)+'</strong><br/><span>/100</span></div></div></div></div></section><section class="panel"><h4>Provider Health</h4><div class="body"><pre class="json">'+esc(JSON.stringify(h,null,2))+'</pre></div></section><section class="panel" style="margin-top:14px"><h4>Chart Feed</h4><div class="body">'+esc(c.count||0)+' candles · '+esc(c.provider||c.source||'none')+(c.error?'<br/><span class="danger">'+esc(c.error)+'</span>':'')+'</div></section></main></div>';
+    var retry=document.getElementById('retry'); if(retry) retry.onclick=load;
+  }
+  function load(){
+    Promise.allSettled([get('/api/decision'),get('/api/provider-health'),get('/api/candles?tf=M15')]).then(function(r){
+      render(r[0].value,r[1].value,r[2].value,(r.find(function(x){return x.status==='rejected';})||{}).reason);
+    });
+  }
+  load();
+})();""".encode("utf-8")
+
+
+def _command_center_js_bytes() -> tuple[bytes, bool]:
+    for path in _command_center_js_candidates():
+        try:
+            if path.is_file():
+                return path.read_bytes(), False
+        except OSError:
+            continue
+    return _fallback_command_center_js(), True
+
 INDEX = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -46,15 +108,32 @@ def _safe_json(obj: Any) -> bytes:
     return json.dumps(obj, allow_nan=False, indent=2).encode("utf-8")
 
 
-def _candles(tf: str) -> dict[str, Any]:
+def _candles(tf: str, count: int | None = None) -> dict[str, Any]:
     from gold_trader.data.twelvedata import candles_for_chart
 
     symbol = os.getenv("GOLD_TWELVE_DATA_SYMBOL") or os.getenv("GOLD_SYMBOL", "XAU/USD")
-    count = int(os.getenv("GOLD_CHART_CANDLE_COUNT", "280"))
+    count = count or int(os.getenv("GOLD_CHART_CANDLE_COUNT", "280"))
     try:
         return candles_for_chart(tf, symbol=symbol, count=count, repo=ROOT)
     except Exception as exc:
         return {"ok": False, "tf": tf.upper(), "provider": "twelvedata", "error": str(exc), "candles": [], "count": 0}
+
+
+def _summary_payload() -> dict[str, Any]:
+    decision = get_decision_for_api()
+    return {
+        "config": {
+            "symbol": decision.get("symbol") or os.getenv("GOLD_SYMBOL", "XAUUSD"),
+            "execution_mode": (decision.get("cloud_status") or {}).get("execution_mode", "paper"),
+        },
+        "states": [],
+        "journal": {"count": 0, "rows": []},
+        "decision": decision,
+        "secrets": {
+            "twelve_data_api_key_set": bool(os.getenv("TWELVE_DATA_API_KEY")),
+            "openai_api_key_set": bool(os.getenv("OPENAI_API_KEY")),
+        },
+    }
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -80,17 +159,35 @@ class Handler(SimpleHTTPRequestHandler):
             return self.json({"ok": True, **data} if path == "/api/health" else data)
         if path == "/api/market-intelligence":
             return self.json(get_decision_for_api().get("market_intelligence_summary", {}))
+        if path == "/api/summary":
+            return self.json(_summary_payload())
         if path == "/api/candles":
             tf = (query.get("tf") or ["M15"])[0]
-            return self.json(_candles(tf))
-        if path == "/command-center.js":
-            try:
-                body = COMMAND_CENTER_JS.read_bytes()
-            except OSError:
-                self.send_response(404)
-                self.end_headers()
-                return
-            return self._send_bytes(body, "application/javascript; charset=utf-8", cache="public, max-age=300")
+            count = int((query.get("count") or [os.getenv("GOLD_CHART_CANDLE_COUNT", "280")])[0])
+            return self.json(_candles(tf, count))
+        if path == "/api/live/candles":
+            tf_raw = (query.get("timeframe") or query.get("tf") or ["15"])[0]
+            tf = tf_raw.upper()
+            if tf.isdigit():
+                tf = {"1": "M1", "5": "M5", "15": "M15", "30": "M30", "60": "H1", "240": "H4", "1440": "D1"}.get(tf, f"M{tf}")
+            count = int((query.get("count") or ["500"])[0])
+            payload = _candles(tf, count)
+            return self.json({
+                "source": payload.get("provider") or payload.get("source") or "unknown",
+                "symbol": payload.get("symbol") or os.getenv("GOLD_SYMBOL", "XAUUSD"),
+                "timeframe": tf_raw,
+                "online": payload.get("provider") == "twelvedata" and not payload.get("cache_note"),
+                "bars": payload.get("candles", []),
+                "count": payload.get("count", 0),
+                "error": payload.get("error"),
+                "note": payload.get("cache_note") or payload.get("fallback_note"),
+            })
+        if path in {"/command-center.js", "/static/app.js"}:
+            body, fallback = _command_center_js_bytes()
+            cache = "no-store" if fallback else "public, max-age=300"
+            return self._send_bytes(body, "application/javascript; charset=utf-8", cache=cache)
+        if path == "/favicon.ico":
+            return self._send_bytes(b"", "image/x-icon", status=204)
         if path in {"/", "/index.html", "/trade", "/market", "/markets", "/signal", "/risk", "/journal", "/settings"}:
             return self._send_bytes(INDEX.encode("utf-8"), "text/html; charset=utf-8")
         self.send_response(404)

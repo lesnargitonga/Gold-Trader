@@ -77,7 +77,11 @@ def test_candles_for_chart_reports_error_when_empty(tmp_path: Path) -> None:
         def __exit__(self, *args: object) -> None:
             return None
 
-    with patch.dict("os.environ", {"TWELVE_DATA_API_KEY": "test-key"}, clear=False):
+    with patch.dict(
+        "os.environ",
+        {"TWELVE_DATA_API_KEY": "test-key", "GOLD_ENABLE_YAHOO_CHART_FALLBACK": "false"},
+        clear=False,
+    ):
         with patch("urllib.request.urlopen", return_value=FakeResp()):
             out = candles_for_chart("H4", symbol="XAUUSD", count=50, repo=tmp_path)
     assert out["ok"] is False
@@ -125,3 +129,40 @@ def test_candles_for_chart_uses_stale_cache_on_api_error(tmp_path: Path) -> None
     assert out["ok"] is True
     assert out["count"] == 1
     assert out.get("cache_note")
+
+
+def test_candles_for_chart_uses_csv_fallback_on_api_error(tmp_path: Path) -> None:
+    csv_dir = tmp_path / "data" / "live_xauusd"
+    csv_dir.mkdir(parents=True)
+    (csv_dir / "xauusd_15m.csv").write_text(
+        "\n".join(
+            [
+                "timestamp,open,high,low,close,volume",
+                "2026-06-04T10:00:00+00:00,3300,3310,3295,3305,10",
+                "2026-06-04T10:15:00+00:00,3305,3312,3301,3308,11",
+            ]
+        )
+    )
+    payload = {"status": "error", "message": "API credits exceeded"}
+
+    class FakeResp:
+        def read(self) -> bytes:
+            return json.dumps(payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    with patch.dict(
+        "os.environ",
+        {"TWELVE_DATA_API_KEY": "test-key", "GOLD_ENABLE_YAHOO_CHART_FALLBACK": "false"},
+        clear=False,
+    ):
+        with patch("urllib.request.urlopen", return_value=FakeResp()):
+            out = candles_for_chart("M15", symbol="XAUUSD", count=50, repo=tmp_path)
+    assert out["ok"] is True
+    assert out["provider"] == "csv_fallback"
+    assert out["count"] == 2
+    assert out["candles"][-1]["close"] == 3308.0
