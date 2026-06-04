@@ -18,7 +18,7 @@ from gold_trader.backtest.engine import run_backtest
 from gold_trader.data.macro import MacroFrame, MacroPoint, MacroSeries
 from gold_trader.data.synthetic import generate_synthetic_bars
 from gold_trader.models import BacktestConfig, MarketBar, Side
-from gold_trader.strategies import RealYieldReversalStrategy
+from gold_trader.strategies.real_yield_reversal import RealYieldReversalStrategy
 
 
 def _build_real10y(start_value: float, daily_deltas: list[float], start_date: datetime) -> MacroSeries:
