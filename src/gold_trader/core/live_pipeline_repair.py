@@ -579,6 +579,18 @@ def cross_market_state() -> dict[str, Any]:
     notes = payload.get("notes")
     if notes is None:
         payload["notes"] = []
+    symbols = payload.get("symbols")
+    if isinstance(symbols, dict) and symbols:
+        usable = [
+            value for value in symbols.values()
+            if isinstance(value, dict) and not value.get("error") and any(value.get(k) is not None for k in ("close", "percent_change", "change"))
+        ]
+        if not usable:
+            payload["state"] = "unavailable"
+            payload["warning"] = payload.get("warning") or "all cross-market quotes failed"
+        elif len(usable) < len(symbols) and str(payload.get("state") or "").lower() == "available":
+            payload["state"] = "degraded"
+            payload["warning"] = payload.get("warning") or "some cross-market quotes failed"
     return payload
 
 

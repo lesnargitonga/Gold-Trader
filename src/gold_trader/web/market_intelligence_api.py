@@ -124,13 +124,19 @@ def _candles(tf: str, count: int | None = None) -> dict[str, Any]:
 
 def _summary_payload() -> dict[str, Any]:
     decision = _decision_payload()
+    health = decision.get("provider_health_summary") or {}
+    journal = _journal_payload(10)
     return {
         "config": {
             "symbol": decision.get("symbol") or os.getenv("GOLD_SYMBOL", "XAUUSD"),
             "execution_mode": (decision.get("cloud_status") or {}).get("execution_mode", "paper"),
         },
-        "states": [],
-        "journal": {"count": 0, "rows": []},
+        "states": [
+            {"key": key, **value}
+            for key, value in health.items()
+            if isinstance(value, dict)
+        ],
+        "journal": journal,
         "decision": decision,
         "secrets": {
             "twelve_data_api_key_set": bool(os.getenv("TWELVE_DATA_API_KEY")),
@@ -247,6 +253,236 @@ def _market_levels_payload(decision: dict[str, Any] | None = None) -> dict[str, 
     }
 
 
+def _smart_money_payload(decision: dict[str, Any]) -> dict[str, Any]:
+    audit = decision.get("alignment_audit") or decision.get("tf_alignment_audit") or {}
+    reads = decision.get("timeframe_reads") or []
+    side = str(decision.get("side") or audit.get("side") or "none").lower()
+    rows: list[dict[str, Any]] = []
+    active_ifvg = 0
+    candles_loaded = 0
+    aligned_count = int(audit.get("aligned_count") or 0)
+    htf_aligned = int(audit.get("htf_aligned") or 0)
+    entry_confirmed = bool(audit.get("entry_confirmed") or audit.get("entry_ifvg_confirmed"))
+    displacement = bool(audit.get("entry_displacement") or audit.get("entry_displacement_confirmed"))
+    liquidity = bool(audit.get("liquidity_confirmed"))
+
+    for row in reads if isinstance(reads, list) else []:
+        if not isinstance(row, dict):
+            continue
+        tf = str(row.get("timeframe") or "").upper()
+        candles = int(float(row.get("candles") or 0))
+        if candles > 0:
+            candles_loaded += candles
+        ifvg = str(row.get("ifvg_side") or "none").lower()
+        has_ifvg = ifvg in {"buy", "sell", "long", "short"}
+        if has_ifvg:
+            active_ifvg += 1
+        rows.append({
+            "timeframe": tf,
+            "candles": candles,
+            "bias": row.get("bias") or "unknown",
+            "ifvg_side": row.get("ifvg_side") or "none",
+            "has_ifvg": has_ifvg,
+            "displacement": bool(row.get("displacement")),
+            "liquidity_sweep": bool(row.get("liquidity_sweep")),
+            "score": int(float(row.get("score") or 0)),
+            "warnings": row.get("warnings") or [],
+        })
+
+    blockers: list[str] = []
+    if aligned_count < 5:
+        blockers.append(f"{max(0, 5 - aligned_count)} more timeframe alignment votes needed")
+    if htf_aligned < 2:
+        blockers.append("higher-timeframe agreement missing")
+    if not entry_confirmed:
+        blockers.append("entry-timeframe IFVG retest missing")
+    if not displacement:
+        blockers.append("entry displacement missing")
+    if not liquidity:
+        blockers.append("liquidity sweep missing")
+
+    state = "ready" if side in {"buy", "sell"} and not blockers else "waiting"
+    if not rows or candles_loaded <= 0:
+        state = "no_candles"
+    elif active_ifvg <= 0:
+        state = "no_active_ifvg"
+
+    return {
+        "state": state,
+        "label": "Smart Money Engine",
+        "side": side,
+        "active_ifvg_reads": active_ifvg,
+        "aligned_count": aligned_count,
+        "required_aligned": 5,
+        "htf_aligned": htf_aligned,
+        "required_htf": 2,
+        "entry_confirmed": entry_confirmed,
+        "entry_displacement": displacement,
+        "liquidity_confirmed": liquidity,
+        "blockers": blockers,
+        "timeframes": rows,
+    }
+
+
+def _data_readiness_payload(decision: dict[str, Any], health: dict[str, Any]) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    labels = {
+        "decision_state": "Decision state",
+        "twelvedata": "Analysis candles",
+        "chart_fallback": "Chart candles",
+        "fmp_macro": "Macro calendar",
+        "finnhub_sentiment": "Sentiment",
+        "spread": "Spread",
+        "volatility": "Volatility",
+        "cot": "COT positioning",
+        "cross_market": "DXY / yields / VIX",
+        "ctrader": "cTrader",
+        "cme": "CME futures/OI",
+        "options": "Options / IV / skew",
+        "orders": "Live orders",
+    }
+    for key, row in health.items():
+        if not isinstance(row, dict):
+            continue
+        state = str(row.get("state") or "unknown")
+        severity = str(row.get("severity") or "warning")
+        configured = row.get("configured")
+        needs_action = severity in {"warning", "danger", "critical"} or configured is False
+        if key in {"orders", "chart_fallback"}:
+            needs_action = severity in {"danger", "critical"}
+        message = row.get("message") or row.get("error") or row.get("warning") or ""
+        action = ""
+        required = row.get("required_env") or []
+        if configured is False and required:
+            action = "Configure " + ", ".join(str(x) for x in required)
+        elif "429" in str(message):
+            action = "Reduce polling or add a higher-limit market data provider"
+        elif "403" in str(message):
+            action = "Replace or upgrade the provider credential"
+        elif needs_action:
+            action = str(message or "Review feed state")
+        items.append({
+            "key": key,
+            "label": row.get("label") or labels.get(key, key),
+            "state": state,
+            "severity": severity,
+            "configured": configured,
+            "needs_action": needs_action,
+            "action": action,
+            "source": row.get("source"),
+            "message": message,
+        })
+
+    for missing in decision.get("missing_inputs") or []:
+        if isinstance(missing, dict):
+            items.append({
+                "key": "missing_" + str(missing.get("key") or "input"),
+                "label": missing.get("label") or "Missing input",
+                "state": "missing",
+                "severity": "warning",
+                "configured": None,
+                "needs_action": True,
+                "action": missing.get("impact") or "",
+                "source": "decision",
+                "message": missing.get("impact") or "",
+            })
+
+    smart = _smart_money_payload(decision)
+    if smart["state"] != "ready":
+        items.append({
+            "key": "smart_money_engine",
+            "label": smart["label"],
+            "state": smart["state"],
+            "severity": "warning",
+            "configured": True,
+            "needs_action": True,
+            "action": "; ".join(smart["blockers"][:3]),
+            "source": "decision_timeframe_reads",
+            "message": "; ".join(smart["blockers"]),
+        })
+
+    actionable = [item for item in items if item.get("needs_action")]
+    critical = [
+        item for item in actionable
+        if item.get("severity") in {"danger", "critical"} or item.get("key") in {"fmp_macro", "spread", "smart_money_engine"}
+    ]
+    return {
+        "state": "blocked" if critical else "degraded" if actionable else "ready",
+        "ready": not critical,
+        "actionable_count": len(actionable),
+        "critical_count": len(critical),
+        "items": items,
+        "actions": actionable,
+    }
+
+
+def _parse_snapshot_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        text = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _journal_payload(limit: int = 20) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(payload: dict[str, Any], source: str) -> None:
+        stamp = payload.get("timestamp_utc") or payload.get("ts") or payload.get("time")
+        key = str(stamp or "") + "|" + str(payload.get("action") or "") + "|" + str(payload.get("final_score") or "")
+        if key in seen:
+            return
+        seen.add(key)
+        rows.append({
+            "timestamp_utc": stamp,
+            "action": payload.get("action") or payload.get("verdict") or "unknown",
+            "score": payload.get("final_score") if payload.get("final_score") is not None else payload.get("score"),
+            "grade": payload.get("final_grade") or payload.get("grade"),
+            "side": payload.get("side") or "none",
+            "price": payload.get("current_price"),
+            "source": source,
+            "blockers": (payload.get("readable_blockers") or payload.get("hard_blocks") or payload.get("blockers") or [])[:5],
+        })
+
+    jsonl = ROOT / "data" / "journal" / "decision_snapshots.jsonl"
+    if jsonl.exists():
+        try:
+            for line in jsonl.read_text(encoding="utf-8").splitlines()[-max(limit * 3, 30):]:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    add(payload, "data/journal/decision_snapshots.jsonl")
+        except OSError:
+            pass
+
+    snap_dir = ROOT / "logs" / "decision_snapshots"
+    if snap_dir.exists():
+        try:
+            files = sorted(snap_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:max(limit * 3, 30)]
+        except OSError:
+            files = []
+        for path in files:
+            payload = read_json(path, {})
+            if isinstance(payload, dict) and payload:
+                try:
+                    source = str(path.relative_to(ROOT))
+                except ValueError:
+                    source = str(path)
+                add(payload, source)
+
+    rows.sort(key=lambda row: _parse_snapshot_time(row.get("timestamp_utc")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    rows = rows[:max(1, min(int(limit), 100))]
+    return {"count": len(rows), "rows": rows}
+
+
 def _decision_payload(*, refresh: bool = False) -> dict[str, Any]:
     decision = get_decision_for_api(refresh=refresh)
     if not isinstance(decision, dict):
@@ -257,6 +493,8 @@ def _decision_payload(*, refresh: bool = False) -> dict[str, Any]:
         decision["provider_health_summary"] = health
         decision["market_intelligence_summary"] = _market_summary_from_health(health)
         decision["market_levels_summary"] = _market_levels_payload(decision)
+        decision["smart_money_summary"] = _smart_money_payload(decision)
+        decision["data_readiness_summary"] = _data_readiness_payload(decision, health)
     except Exception:
         pass
     return decision
@@ -291,6 +529,13 @@ class Handler(SimpleHTTPRequestHandler):
             return self.json(_decision_payload().get("market_intelligence_summary", {}))
         if path == "/api/market-levels":
             return self.json(_market_levels_payload(_decision_payload()))
+        if path == "/api/smart-money":
+            return self.json(_decision_payload().get("smart_money_summary", {}))
+        if path == "/api/data-readiness":
+            return self.json(_decision_payload().get("data_readiness_summary", {}))
+        if path == "/api/journal":
+            limit = int((query.get("limit") or ["20"])[0])
+            return self.json(_journal_payload(limit))
         if path == "/api/summary":
             return self.json(_summary_payload())
         if path == "/api/candles":

@@ -299,9 +299,27 @@ def update_cross_market() -> tuple[dict[str, Any], ProviderHealth]:
                 notes.append(f"{sym} {float(pc):+.2f}%")
         except Exception as exc:
             quotes[sym] = {"error": repr(exc)}
-    payload = {"state": "available" if quotes else "unknown", "source": "twelvedata_quote", "symbols": quotes, "notes": notes, "updated_at": _iso()}
+    usable = [
+        value for value in quotes.values()
+        if isinstance(value, dict) and not value.get("error") and any(value.get(k) is not None for k in ("close", "percent_change", "change"))
+    ]
+    if not quotes:
+        state = "unknown"
+        warning = "no cross-market symbols configured"
+    elif not usable:
+        state = "unavailable"
+        warning = "all cross-market quotes failed"
+    elif len(usable) < len(quotes):
+        state = "degraded"
+        warning = "some cross-market quotes failed"
+    else:
+        state = "available"
+        warning = ""
+    payload = {"state": state, "source": "twelvedata_quote", "symbols": quotes, "notes": notes, "updated_at": _iso()}
+    if warning:
+        payload["warning"] = warning
     _write(CROSS_MARKET_PATH, payload)
-    return payload, ProviderHealth("cross_market", bool(quotes), "twelvedata_quote", ", ".join(notes[:4]), payload["updated_at"])
+    return payload, ProviderHealth("cross_market", bool(usable), "twelvedata_quote", ", ".join(notes[:4]) or warning, payload["updated_at"])
 
 
 def build_live_context(symbol: str | None = None) -> LiveMarketContext:

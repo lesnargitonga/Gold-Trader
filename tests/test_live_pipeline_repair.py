@@ -46,6 +46,26 @@ def test_cached_feed_states_and_manual_options_are_preserved(tmp_path: Path, mon
     assert cme["state"] == "missing_credentials"
 
 
+def test_cross_market_all_error_snapshot_is_unavailable(tmp_path: Path, monkeypatch) -> None:
+    _patch_roots(monkeypatch, tmp_path)
+    monkeypatch.setenv("TWELVE_DATA_API_KEY", "test")
+    (tmp_path / "logs" / "cross_market_state.json").write_text(
+        json.dumps(
+            {
+                "state": "available",
+                "source": "twelvedata_quote",
+                "symbols": {"DXY": {"error": "429"}, "VIX": {"error": "429"}},
+                "updated_at": lpr.iso_now(),
+            }
+        )
+    )
+
+    cross = lpr.cross_market_state()
+
+    assert cross["state"] == "unavailable"
+    assert cross["warning"]
+
+
 def test_repair_timeframe_candles_repairs_missing_rows(monkeypatch) -> None:
     monkeypatch.setenv("GOLD_REPAIR_FETCH_WORKERS", "3")
 

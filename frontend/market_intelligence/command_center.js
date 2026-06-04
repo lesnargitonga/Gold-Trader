@@ -12,6 +12,8 @@
     candleMeta: null,
     loadError: null,
     chartLoading: false,
+    readiness: null,
+    journal: null,
   };
 
   function $(sel) {
@@ -122,6 +124,20 @@
       j("/api/provider-health").then(function (h) {
         state.health = h;
       }),
+      j("/api/data-readiness")
+        .then(function (r) {
+          state.readiness = r;
+        })
+        .catch(function () {
+          state.readiness = null;
+        }),
+      j("/api/journal?limit=20")
+        .then(function (jrn) {
+          state.journal = jrn;
+        })
+        .catch(function () {
+          state.journal = { count: 0, rows: [] };
+        }),
     ])
       .catch(function (e) {
         state.loadError = String(e);
@@ -395,7 +411,9 @@
           ? "Execution is enabled. Confirm broker/spread before firing."
           : "Paper/alert only. Live execution cannot fire from this UI."
       ) +
-      '</p></div></div><div class="panel"><h4>Watching For</h4><div class="body"><ul>' +
+      "</p></div></div>" +
+      readinessPanel(d) +
+      '<div class="panel"><h4>Watching For</h4><div class="body"><ul>' +
       ((d.watching_for || [])
         .map(function (x) {
           return "<li>" + esc(itemText(x)) + "</li>";
@@ -416,6 +434,35 @@
       "</ul></div></div>" +
       contextPanel(d) +
       "</div>"
+    );
+  }
+
+  function readinessPanel(d) {
+    var readiness = state.readiness || d.data_readiness_summary || {};
+    var actions = readiness.actions || [];
+    return (
+      '<div class="panel"><h4>Operational Gaps</h4><div class="body"><div class="contextGrid"><div class="ctx"><span>State</span><b class="' +
+      (readiness.state === "ready" ? "okText" : "amber") +
+      '">' +
+      esc(readiness.state || "unknown") +
+      '</b></div><div class="ctx"><span>Actions</span><b>' +
+      esc(safe(readiness.actionable_count, 0)) +
+      '</b></div></div><ul>' +
+      (actions.length
+        ? actions
+            .slice(0, 7)
+            .map(function (x) {
+              return (
+                "<li><b>" +
+                esc(x.label || x.key) +
+                ":</b> " +
+                esc(x.action || x.message || x.state || "review") +
+                "</li>"
+              );
+            })
+            .join("")
+        : "<li>No operational gaps</li>") +
+      "</ul></div></div>"
     );
   }
 
@@ -577,9 +624,57 @@
     );
   }
 
+  function smartMoneyPanel(d) {
+    var sme = d.smart_money_summary || {};
+    var rows = sme.timeframes || [];
+    return (
+      '<section class="card wide"><h3>Smart Money Engine</h3><div class="body contextGrid"><div class="ctx"><span>State</span><b class="' +
+      (sme.state === "ready" ? "okText" : "amber") +
+      '">' +
+      esc(sme.state || "unknown") +
+      '</b></div><div class="ctx"><span>IFVG Reads</span><b>' +
+      esc(safe(sme.active_ifvg_reads, 0)) +
+      '</b></div><div class="ctx"><span>Aligned</span><b>' +
+      esc(safe(sme.aligned_count, 0)) +
+      "/" +
+      esc(safe(sme.required_aligned, 5)) +
+      '</b></div><div class="ctx"><span>HTF</span><b>' +
+      esc(safe(sme.htf_aligned, 0)) +
+      "/" +
+      esc(safe(sme.required_htf, 2)) +
+      '</b></div><div class="ctx"><span>Entry IFVG</span><b>' +
+      esc(sme.entry_confirmed ? "yes" : "no") +
+      '</b></div><div class="ctx"><span>Displacement</span><b>' +
+      esc(sme.entry_displacement ? "yes" : "no") +
+      '</b></div><div class="ctx"><span>Liquidity</span><b>' +
+      esc(sme.liquidity_confirmed ? "yes" : "no") +
+      "</b></div></div><div class=\"tfGrid\">" +
+      rows
+        .map(function (r) {
+          return (
+            '<div class="tfCard"><h5>' +
+            esc(r.timeframe || "TF") +
+            "</h5><p>Bias: " +
+            esc(r.bias || "unknown") +
+            "</p><p>IFVG: " +
+            esc(r.ifvg_side || "none") +
+            "</p><p>Displacement: " +
+            esc(r.displacement ? "yes" : "no") +
+            "</p><p>Liquidity: " +
+            esc(r.liquidity_sweep ? "yes" : "no") +
+            "</p></div>"
+          );
+        })
+        .join("") +
+      "</div></section>"
+    );
+  }
+
   function signalPage(d) {
     return (
-      '<div class="grid"><section class="card"><h3>Signal Engine</h3><div class="body" style="padding:18px"><h2>Alignment Audit</h2><pre class="json">' +
+      '<div class="grid">' +
+      smartMoneyPanel(d) +
+      '<section class="card"><h3>Signal Engine</h3><div class="body" style="padding:18px"><h2>Alignment Audit</h2><pre class="json">' +
       esc(JSON.stringify(d.alignment_audit || {}, null, 2)) +
       "</pre></div></section>" +
       lists(d) +
@@ -590,35 +685,76 @@
 
   function riskPage(d) {
     return (
-      '<div class="grid"><section class="card"><h3>Risk &amp; Orders</h3><div class="body" style="padding:18px"><pre class="json">' +
-      esc(
-        JSON.stringify(
-          {
-            daily_guard: d.daily_guard,
-            live_orders_enabled: d.live_orders_enabled,
-            missing_inputs: d.missing_inputs,
-          },
-          null,
-          2
-        )
-      ) +
-      "</pre></div></section>" +
+      '<div class="grid"><section class="card"><h3>Risk &amp; Orders</h3><div class="body contextGrid"><div class="ctx"><span>Live Orders</span><b class="amber">' +
+      esc(d.live_orders_enabled ? "open" : "locked") +
+      '</b></div><div class="ctx"><span>Trades Today</span><b>' +
+      esc(safe((d.daily_guard || {}).trades_taken, 0)) +
+      '</b></div><div class="ctx"><span>Losses Today</span><b>' +
+      esc(safe((d.daily_guard || {}).losses_taken, 0)) +
+      '</b></div><div class="ctx"><span>Open Positions</span><b>' +
+      esc(safe((d.daily_guard || {}).open_positions, 0)) +
+      '</b></div><div class="ctx"><span>Guard</span><b>' +
+      esc((d.daily_guard || {}).blocked ? "blocked" : "clear") +
+      "</b></div></div></section>" +
       lists(d) +
       "</div>"
     );
   }
 
   function journalPage() {
+    var journal = state.journal || { rows: [] };
+    var rows = journal.rows || [];
     return (
-      '<section class="card"><h3>Journal &amp; Evidence</h3><div class="body" style="padding:18px"><p>Decision snapshots are written to <b>logs/decision_snapshots/</b> on each hardening pass.</p><p>Next: wire paper-trade entries, R-multiple tracking, expectancy, and screenshot/evidence capture.</p></div></section>'
+      '<section class="card"><h3>Journal &amp; Evidence</h3><div class="tfGrid">' +
+      (rows.length
+        ? rows
+            .map(function (r) {
+              return (
+                '<div class="tfCard"><h5>' +
+                esc((r.timestamp_utc || "unknown").replace("+00:00", "Z")) +
+                "</h5><p>Action: " +
+                esc(r.action || "unknown") +
+                "</p><p>Score: " +
+                esc(safe(r.score, "—")) +
+                " · Grade " +
+                esc(safe(r.grade, "—")) +
+                "</p><p>Side: " +
+                esc(r.side || "none") +
+                "</p><p>Source: " +
+                esc(r.source || "snapshot") +
+                "</p></div>"
+              );
+            })
+            .join("")
+        : '<div class="tfCard"><h5>No Journal Rows</h5><p>decision snapshots unavailable</p></div>') +
+      "</div></section>"
     );
   }
 
   function settingsPage(d) {
+    var health = state.health || d.provider_health_summary || {};
     return (
-      '<section class="card"><h3>Settings &amp; Health</h3><div class="body" style="padding:18px"><pre class="json">' +
-      esc(JSON.stringify(d.provider_health_summary || {}, null, 2)) +
-      "</pre></div></section>"
+      '<div class="grid"><section class="card"><h3>Settings &amp; Health</h3><div class="tfGrid">' +
+      Object.keys(health)
+        .map(function (k) {
+          var h = health[k] || {};
+          return (
+            '<div class="tfCard"><h5>' +
+            esc(h.label || k) +
+            "</h5><p>State: " +
+            esc(h.state || "unknown") +
+            (h.severity ? " · " + esc(h.severity) : "") +
+            "</p><p>Configured: " +
+            esc(h.configured === undefined ? "—" : h.configured ? "yes" : "no") +
+            "</p><p>" +
+            esc(h.message || h.source || "") +
+            "</p></div>"
+          );
+        })
+        .join("") +
+      "</div></section>" +
+      lists(d) +
+      "</div>"
     );
   }
 

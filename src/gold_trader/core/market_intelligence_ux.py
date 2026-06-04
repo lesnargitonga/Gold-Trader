@@ -570,6 +570,20 @@ def provider_health(decision: dict[str, Any], live_context: dict[str, Any]) -> d
     volatility_feed = feed_object("volatility_state", "volatility")
     cot_feed = feed_object("cot_state", "cot")
     cross_market_feed = feed_object("cross_market_state", "cross_market")
+    cross_market_state = live_context.get("cross_market_state") or market.get("cross_market_state") or "unknown"
+    if isinstance(cross_market_feed, dict):
+        symbols = cross_market_feed.get("symbols")
+        if isinstance(symbols, dict) and symbols:
+            usable = [
+                value for value in symbols.values()
+                if isinstance(value, dict) and not value.get("error") and any(value.get(k) is not None for k in ("close", "percent_change", "change"))
+            ]
+            if not usable:
+                cross_market_state = "unavailable"
+                cross_market_feed.setdefault("warning", "all cross-market quotes failed")
+            elif len(usable) < len(symbols) and str(cross_market_state).lower() == "available":
+                cross_market_state = "degraded"
+                cross_market_feed.setdefault("warning", "some cross-market quotes failed")
     ctrader_required = ["CTRADER_CLIENT_ID", "CTRADER_CLIENT_SECRET", "CTRADER_ACCESS_TOKEN", "CTRADER_ACCOUNT_ID"]
     cme_required = ["CME_API_KEY or CME_CLIENT_ID"]
     options_required = ["CME_API_KEY or OPTIONS_FEED_URL"]
@@ -645,7 +659,7 @@ def provider_health(decision: dict[str, Any], live_context: dict[str, Any]) -> d
             message=feed_message(cot_feed),
         ),
         "cross_market": status(
-            live_context.get("cross_market_state") or market.get("cross_market_state") or "unknown",
+            cross_market_state,
             "DXY / yields / VIX",
             source=cross_market_feed.get("source") or live_context.get("cross_market_source") or market.get("cross_market_source") or "twelvedata_quote",
             configured=bool(os.getenv("TWELVE_DATA_API_KEY") or os.getenv("GOLD_TWELVE_DATA_API_KEY")),

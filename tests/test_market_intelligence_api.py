@@ -108,6 +108,23 @@ class TestMarketIntelligenceApi:
         assert health["volatility"]["state"] == "normal"
         assert health["options"]["severity"] == "warning"
 
+    def test_provider_health_downgrades_all_error_cross_market(self) -> None:
+        decision = {
+            "timestamp_utc": "2026-06-04T10:00:00+00:00",
+            "cloud_status": {"data_provider": "twelvedata", "candles_loaded": 50},
+            "timeframe_reads": [{"timeframe": "M15", "candles": 50}],
+        }
+        context = {
+            "cross_market_state": {
+                "state": "available",
+                "source": "twelvedata_quote",
+                "symbols": {"DXY": {"error": "429"}, "VIX": {"error": "429"}},
+            },
+        }
+        health = provider_health(decision, context)
+        assert health["cross_market"]["state"] == "unavailable"
+        assert health["cross_market"]["severity"] == "warning"
+
     def test_provider_health_endpoint_normalizes_stale_dict_state(self) -> None:
         stale = {"cot": {"state": {"state": "unknown", "source": "not_connected"}, "label": "COT"}}
         with (
@@ -151,6 +168,8 @@ class TestMarketIntelligenceApi:
         assert "429" in health["spread"]["message"]
         assert payload["market_intelligence_summary"]["chart"] == "chart_only"
         assert payload["market_levels_summary"]["state"] in {"manual_proxy", "missing"}
+        assert payload["smart_money_summary"]["label"] == "Smart Money Engine"
+        assert payload["data_readiness_summary"]["actionable_count"] >= 1
 
     def test_market_levels_endpoint_returns_manual_proxy_levels(self, tmp_path: Path) -> None:
         cfg = tmp_path / "config"
@@ -175,3 +194,48 @@ class TestMarketIntelligenceApi:
         assert payload["levels"][0]["price"] == 4500
         assert payload["levels"][0]["distance_points"] == 2
         assert payload["levels"][1]["strength"] == 2
+
+    def test_smart_money_and_readiness_endpoints(self) -> None:
+        decision = {
+            "timestamp_utc": "2026-06-04T10:00:00+00:00",
+            "symbol": "XAUUSD",
+            "side": "buy",
+            "cloud_status": {"execution_mode": "paper", "candles_loaded": 20},
+            "timeframe_reads": [
+                {"timeframe": "M15", "candles": 20, "ifvg_side": "buy", "bias": "bullish", "displacement": True},
+            ],
+            "alignment_audit": {"aligned_count": 1, "htf_aligned": 0, "entry_confirmed": True, "entry_displacement": True},
+        }
+        with patch.object(mi, "get_decision_for_api", return_value=decision):
+            status, _ctype, body = self.get("/api/smart-money")
+            smart = json.loads(body)
+            assert status == 200
+            assert smart["active_ifvg_reads"] == 1
+            assert smart["state"] == "waiting"
+            status, _ctype, body = self.get("/api/data-readiness")
+            readiness = json.loads(body)
+            assert status == 200
+            assert "actions" in readiness
+
+    def test_journal_endpoint_reads_decision_snapshots(self, tmp_path: Path) -> None:
+        snap_dir = tmp_path / "logs" / "decision_snapshots"
+        snap_dir.mkdir(parents=True)
+        (snap_dir / "decision.json").write_text(
+            json.dumps(
+                {
+                    "timestamp_utc": "2026-06-04T10:00:00+00:00",
+                    "action": "WAIT",
+                    "final_score": 22,
+                    "final_grade": "D",
+                    "side": "none",
+                    "current_price": 4500,
+                    "blockers": ["macro"],
+                }
+            )
+        )
+        with patch.object(mi, "ROOT", tmp_path):
+            status, _ctype, body = self.get("/api/journal?limit=5")
+        payload = json.loads(body)
+        assert status == 200
+        assert payload["count"] == 1
+        assert payload["rows"][0]["score"] == 22
