@@ -453,6 +453,10 @@
       esc(safe(m.cme, "not_connected")) +
       '</b></div><div class="ctx"><span>Options</span><b>' +
       esc(safe(m.options, "not_connected")) +
+      '</b></div><div class="ctx"><span>COT</span><b>' +
+      esc(feedLabel(safe(m.cot, "unknown"))) +
+      '</b></div><div class="ctx"><span>DXY / Yields / VIX</span><b>' +
+      esc(feedLabel(safe(m.cross_market, "unknown"))) +
       "</b></div></div></div>"
     );
   }

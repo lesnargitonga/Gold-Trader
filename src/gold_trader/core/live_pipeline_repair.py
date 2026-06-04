@@ -7,6 +7,7 @@ import os
 import re
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -144,7 +145,8 @@ def twelve_symbol() -> str:
     return raw
 
 
-def http_get_text(url: str, timeout: int = 25) -> str:
+def http_get_text(url: str, timeout: int | None = None) -> str:
+    timeout = timeout if timeout is not None else int(os.getenv("GOLD_PROVIDER_HTTP_TIMEOUT_SECONDS", "10"))
     req = urllib.request.Request(url, headers={"User-Agent": "GoldTrader/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return response.read().decode("utf-8", errors="replace")
@@ -206,7 +208,7 @@ def fetch_twelve_candles_direct(tf: str, count: int | None = None) -> tuple[list
     }
     url = "https://api.twelvedata.com/time_series?" + urllib.parse.urlencode(params)
     try:
-        raw = http_get_text(url)
+        raw = http_get_text(url, timeout=int(os.getenv("GOLD_TWELVE_DIRECT_TIMEOUT_SECONDS", "12")))
     except Exception as exc:
         cached = read_cached_candles(tf)
         if cached:
@@ -288,7 +290,7 @@ def fetch_twelve_quote() -> dict[str, Any]:
     params = {"symbol": twelve_symbol(), "apikey": key}
     url = "https://api.twelvedata.com/quote?" + urllib.parse.urlencode(params)
     try:
-        payload = json.loads(http_get_text(url))
+        payload = json.loads(http_get_text(url, timeout=int(os.getenv("GOLD_QUOTE_TIMEOUT_SECONDS", "6"))))
     except Exception as exc:
         return {
             "state": "unknown_nonfatal_in_paper",
@@ -388,7 +390,7 @@ def fetch_fmp_calendar() -> dict[str, Any]:
     url = "https://financialmodelingprep.com/api/v3/economic_calendar?" + urllib.parse.urlencode(params)
 
     try:
-        payload = json.loads(http_get_text(url))
+        payload = json.loads(http_get_text(url, timeout=int(os.getenv("GOLD_FMP_TIMEOUT_SECONDS", "8"))))
     except Exception as exc:
         return {"state": "error", "source": "fmp", "events": [], "error": repr(exc), "updated_at": iso_now()}
 
@@ -473,6 +475,97 @@ def read_sentiment_state() -> dict[str, Any]:
     }
 
 
+def feed_age_seconds(payload: dict[str, Any]) -> int | None:
+    stamp = parse_time(payload.get("updated_at") or payload.get("timestamp") or payload.get("timestamp_utc"))
+    return int((now_utc() - stamp).total_seconds()) if stamp else None
+
+
+def read_feed_state(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    payload = read_json(path, {})
+    if not isinstance(payload, dict) or not payload:
+        payload = dict(default)
+    else:
+        payload = dict(payload)
+        for key, value in default.items():
+            payload.setdefault(key, value)
+    payload.setdefault("updated_at", iso_now())
+    age = feed_age_seconds(payload)
+    if age is not None:
+        payload["age_seconds"] = age
+    return payload
+
+
+def cot_state() -> dict[str, Any]:
+    return read_feed_state(
+        DATA / "cot" / "gold_cot_state.json",
+        {
+            "state": "unknown",
+            "source": "not_connected",
+            "summary": "COT feed has not produced a usable snapshot.",
+        },
+    )
+
+
+def cross_market_state() -> dict[str, Any]:
+    if not api_key("TWELVE_DATA_API_KEY"):
+        default = {
+            "state": "missing_key",
+            "source": "twelvedata_quote",
+            "notes": [],
+            "warning": "TWELVE_DATA_API_KEY missing",
+        }
+    else:
+        default = {
+            "state": "unknown",
+            "source": "twelvedata_quote",
+            "notes": [],
+            "warning": "cross-market snapshot unavailable",
+        }
+    payload = read_feed_state(LOGS / "cross_market_state.json", default)
+    notes = payload.get("notes")
+    if notes is None:
+        payload["notes"] = []
+    return payload
+
+
+def cme_state() -> dict[str, Any]:
+    configured = bool(api_key("CME_API_KEY") or api_key("CME_CLIENT_ID"))
+    return {
+        "state": "credentials_present_not_validated" if configured else "missing_credentials",
+        "source": "cme_direct_or_vendor",
+        "configured": configured,
+        "required_env": ["CME_API_KEY or CME_CLIENT_ID"],
+        "message": "No validated live CME futures/OI feed is configured." if not configured else "CME credentials are present but this runtime has not validated a feed snapshot.",
+        "updated_at": iso_now(),
+    }
+
+
+def market_levels_state() -> dict[str, Any]:
+    path = ROOT / "config" / "market_levels.json"
+    raw = read_json(path, {})
+    rows = raw.get("levels") if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+    levels_count = len(rows) if isinstance(rows, list) else 0
+    configured = bool(api_key("OPTIONS_FEED_URL") or api_key("OPTIONS_API_KEY") or api_key("CME_API_KEY"))
+    if configured:
+        state = "credentials_present_not_validated"
+        message = "Options credentials are present but this runtime has not validated live IV/skew/OI data."
+    elif levels_count:
+        state = "manual_proxy"
+        message = "Using manual market_levels.json as options/OI proxy until a live options feed is configured."
+    else:
+        state = "missing_credentials"
+        message = "No options/IV/skew feed or manual market-level proxy is configured."
+    return {
+        "state": state,
+        "source": "options_vendor_or_market_levels_json",
+        "configured": configured,
+        "levels_count": levels_count,
+        "required_env": ["OPTIONS_FEED_URL or CME_API_KEY"],
+        "message": message,
+        "updated_at": iso_now(),
+    }
+
+
 def decision_quality(payload: dict[str, Any]) -> int:
     if not isinstance(payload, dict):
         return -1
@@ -526,6 +619,7 @@ def repair_timeframe_candles(decision: dict[str, Any]) -> dict[str, str]:
 
     existing = {str(r.get("timeframe", "")).upper(): r for r in reads if isinstance(r, dict)}
     fetch_errors: dict[str, str] = {}
+    pending: list[str] = []
 
     for tf in TIMEFRAMES:
         row = existing.get(tf)
@@ -545,22 +639,40 @@ def repair_timeframe_candles(decision: dict[str, Any]) -> dict[str, str]:
                 "warnings": [],
             }
             reads.append(row)
+            existing[tf] = row
 
         if int(row.get("candles") or 0) <= 0:
-            candles, error = fetch_twelve_candles(tf)
-            if candles:
-                row["candles"] = len(candles)
-                row["current_price"] = float(candles[-1]["close"])
-                if str(row.get("bias") or "unknown").lower() == "unknown":
-                    row["bias"] = candle_bias(candles)
-                warnings = [w for w in (row.get("warnings") or []) if "no live/cached candle data" not in str(w)]
-                warnings.append("candles repaired from Twelve Data; IFVG not inferred by repair layer")
-                row["warnings"] = warnings
-            else:
-                fetch_errors[tf] = error or "unknown candle fetch error"
-                # Do not leave a fake 0 row unqualified.
-                row["data_state"] = "unavailable"
-                row["warnings"] = list(dict.fromkeys((row.get("warnings") or []) + [f"Twelve Data unavailable for {tf}: {fetch_errors[tf]}"]))
+            pending.append(tf)
+
+    def fetch_one(tf: str) -> tuple[str, list[dict[str, Any]], str | None]:
+        candles, error = fetch_twelve_candles(tf)
+        return tf, candles, error
+
+    results: list[tuple[str, list[dict[str, Any]], str | None]] = []
+    workers = max(1, min(len(pending), int(os.getenv("GOLD_REPAIR_FETCH_WORKERS", "4")))) if pending else 0
+    if workers == 1:
+        results = [fetch_one(tf) for tf in pending]
+    elif workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(fetch_one, tf) for tf in pending]
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    for tf, candles, error in results:
+        row = existing[tf]
+        if candles:
+            row["candles"] = len(candles)
+            row["current_price"] = float(candles[-1]["close"])
+            if str(row.get("bias") or "unknown").lower() == "unknown":
+                row["bias"] = candle_bias(candles)
+            warnings = [w for w in (row.get("warnings") or []) if "no live/cached candle data" not in str(w)]
+            warnings.append("candles repaired from Twelve Data; IFVG not inferred by repair layer")
+            row["warnings"] = list(dict.fromkeys(warnings))
+        else:
+            fetch_errors[tf] = error or "unknown candle fetch error"
+            # Do not leave a fake 0 row unqualified.
+            row["data_state"] = "unavailable"
+            row["warnings"] = list(dict.fromkeys((row.get("warnings") or []) + [f"Twelve Data unavailable for {tf}: {fetch_errors[tf]}"]))
 
     if decision.get("current_price") is None:
         for tf in ("M1", "M5", "M15", "H1", "H4", "D1"):
@@ -851,29 +963,63 @@ def build_provider_health(decision: dict[str, Any], context: dict[str, Any], fet
         "fmp_macro": {
             "state": context["macro_state"].get("state", "unknown"),
             "label": "FMP macro calendar",
+            "source": context["macro_state"].get("source", "fmp"),
             "next_event": context["macro_state"].get("next_event"),
             "error": context["macro_state"].get("error"),
         },
         "finnhub_sentiment": {
             "state": context["sentiment_state"].get("state", "unknown"),
             "label": "Finnhub/news sentiment",
+            "source": context["sentiment_state"].get("source", "file"),
             "fresh": context["sentiment_state"].get("fresh"),
+            "age_seconds": context["sentiment_state"].get("age_seconds"),
         },
         "spread": {
             "state": context["spread_state"].get("state", "unknown"),
             "label": "Spread feed",
+            "source": context["spread_state"].get("source", "twelvedata"),
             "spread_points": context["spread_state"].get("spread_points"),
             "error": context["spread_state"].get("error"),
         },
         "volatility": {
             "state": context["volatility_state"].get("state", "unknown"),
             "label": "M15 ATR volatility",
+            "source": context["volatility_state"].get("source", "twelvedata_M15"),
             "atr": context["volatility_state"].get("atr"),
             "atr_pct": context["volatility_state"].get("atr_pct"),
         },
+        "cot": {
+            "state": context["cot_state"].get("state", "unknown"),
+            "label": "COT positioning",
+            "source": context["cot_state"].get("source", "not_connected"),
+            "summary": context["cot_state"].get("summary", ""),
+            "age_seconds": context["cot_state"].get("age_seconds"),
+        },
+        "cross_market": {
+            "state": context["cross_market_state"].get("state", "unknown"),
+            "label": "DXY / yields / VIX",
+            "source": context["cross_market_state"].get("source", "twelvedata_quote"),
+            "notes": context["cross_market_state"].get("notes", []),
+            "age_seconds": context["cross_market_state"].get("age_seconds"),
+        },
         "ctrader": {"state": "connected" if api_key("CTRADER_ACCESS_TOKEN") else "pending", "label": "cTrader broker"},
-        "cme": {"state": "connected" if api_key("CME_API_KEY") else "not_connected", "label": "CME futures/options"},
-        "options": {"state": "connected" if api_key("OPTIONS_API_KEY") else "not_connected", "label": "Options/IV/skew"},
+        "cme": {
+            "state": context["cme_state"].get("state", "missing_credentials"),
+            "label": "CME futures/OI",
+            "source": context["cme_state"].get("source", "cme_direct_or_vendor"),
+            "configured": context["cme_state"].get("configured"),
+            "required_env": context["cme_state"].get("required_env"),
+            "message": context["cme_state"].get("message"),
+        },
+        "options": {
+            "state": context["options_state"].get("state", "missing_credentials"),
+            "label": "Options/IV/skew",
+            "source": context["options_state"].get("source", "options_vendor_or_market_levels_json"),
+            "configured": context["options_state"].get("configured"),
+            "levels_count": context["options_state"].get("levels_count"),
+            "required_env": context["options_state"].get("required_env"),
+            "message": context["options_state"].get("message"),
+        },
         "orders": {
             "state": "unlocked" if os.getenv("GOLD_ENABLE_LIVE_ORDERS", "false").lower() == "true" else "locked",
             "label": "Live orders",
@@ -890,21 +1036,30 @@ def repair_and_harden() -> dict[str, Any]:
     decision = load_best_decision()
     fetch_errors = repair_timeframe_candles(decision)
 
-    m15_candles, m15_error = fetch_twelve_candles("M15", count=100)
+    provider_workers = int(os.getenv("GOLD_PROVIDER_FETCH_WORKERS", "3"))
+    with ThreadPoolExecutor(max_workers=max(1, provider_workers)) as executor:
+        future_m15 = executor.submit(fetch_twelve_candles, "M15", 100)
+        future_calendar = executor.submit(fetch_fmp_calendar)
+        future_quote = executor.submit(fetch_twelve_quote)
+
+        m15_candles, m15_error = future_m15.result()
+        calendar = future_calendar.result()
+        spread = future_quote.result()
+
     volatility = atr_volatility(m15_candles)
     if m15_error and volatility.get("state") == "unknown":
         volatility["error"] = m15_error
 
-    calendar = fetch_fmp_calendar()
     context = {
         "updated_at": iso_now(),
         "macro_state": compute_macro_state(calendar),
-        "spread_state": fetch_twelve_quote(),
+        "spread_state": spread,
         "volatility_state": volatility,
         "sentiment_state": read_sentiment_state(),
-        "cot_state": {"state": "unknown", "source": "not_connected"},
-        "cme_state": {"state": "not_connected", "source": "not_connected"},
-        "options_state": {"state": "not_connected", "source": "not_connected"},
+        "cot_state": cot_state(),
+        "cross_market_state": cross_market_state(),
+        "cme_state": cme_state(),
+        "options_state": market_levels_state(),
     }
 
     write_json(LOGS / "live_market_context.json", context)
@@ -917,6 +1072,12 @@ def repair_and_harden() -> dict[str, Any]:
         market["macro_state"] = context["macro_state"].get("state")
         market["sentiment_state"] = context["sentiment_state"].get("state")
         market["spread_state"] = context["spread_state"].get("state")
+        market["cot_state"] = context["cot_state"].get("state")
+        market["cot_source"] = context["cot_state"].get("source")
+        market["cross_market_state"] = context["cross_market_state"].get("state")
+        market["cross_market_source"] = context["cross_market_state"].get("source")
+        market["cme_state"] = context["cme_state"].get("state")
+        market["options_state"] = context["options_state"].get("state")
         if context["spread_state"].get("spread_points") is not None:
             market["spread_points"] = context["spread_state"].get("spread_points")
 
@@ -985,6 +1146,7 @@ def repair_and_harden() -> dict[str, Any]:
         "cme": context["cme_state"].get("state", "not_connected"),
         "options": context["options_state"].get("state", "not_connected"),
         "cot": context["cot_state"].get("state", "unknown"),
+        "cross_market": context["cross_market_state"].get("state", "unknown"),
         "updated_at": iso_now(),
     }
     write_json(LOGS / "market_intelligence.json", market_intelligence)

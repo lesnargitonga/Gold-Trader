@@ -181,6 +181,7 @@ def _market_summary_from_health(health: dict[str, Any]) -> dict[str, Any]:
         "cme": state("cme"),
         "options": state("options"),
         "cot": state("cot"),
+        "cross_market": state("cross_market"),
         "chart": state("chart_fallback"),
     }
 

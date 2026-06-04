@@ -767,6 +767,7 @@ def harden_decision(decision: dict[str, Any] | None = None) -> dict[str, Any]:
             "cme": "configured" if os.getenv("CME_API_KEY") or os.getenv("CME_CLIENT_ID") else "missing credentials",
             "options": "configured" if os.getenv("OPTIONS_FEED_URL") or os.getenv("CME_API_KEY") else "manual proxy" if (ROOT / "config" / "market_levels.json").exists() else "missing credentials",
             "cot": _feed_state(live_context, "cot_state") or "unknown",
+            "cross_market": _feed_state(live_context, "cross_market_state") or "unknown",
         },
         "chart_meta": {
             "provider": (state.get("cloud_status") or {}).get("data_provider") or os.getenv("GOLD_MARKET_DATA_PROVIDER", "unknown"),
