@@ -488,7 +488,8 @@ def provider_health(decision: dict[str, Any], live_context: dict[str, Any]) -> d
         latency_ms: int | None = None,
         severity: str | None = None,
     ) -> dict[str, Any]:
-        text = str(state or "unknown")
+        raw_state = state.get("state") if isinstance(state, dict) else state
+        text = str(raw_state or "unknown")
         low = text.lower()
         if severity is None:
             if low in {"ok", "fresh", "clear", "available", "normal", "neutral", "mild_bullish", "mild_bearish", "bullish", "bearish", "manual_proxy"}:
