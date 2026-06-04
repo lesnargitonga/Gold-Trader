@@ -382,6 +382,10 @@ def atr_volatility(candles: list[dict[str, Any]], period: int = 14) -> dict[str,
 def fetch_fmp_calendar() -> dict[str, Any]:
     key = api_key("FMP_API_KEY")
     if not key:
+        manual = fetch_manual_calendar()
+        if manual.get("events"):
+            manual["primary_error"] = "FMP_API_KEY missing"
+            return manual
         return {"state": "missing_key", "source": "fmp", "events": [], "updated_at": iso_now()}
 
     start = now_utc().date() - timedelta(days=1)
@@ -392,6 +396,10 @@ def fetch_fmp_calendar() -> dict[str, Any]:
     try:
         payload = json.loads(http_get_text(url, timeout=int(os.getenv("GOLD_FMP_TIMEOUT_SECONDS", "8"))))
     except Exception as exc:
+        manual = fetch_manual_calendar()
+        if manual.get("events"):
+            manual["primary_error"] = repr(exc)
+            return manual
         return {"state": "error", "source": "fmp", "events": [], "error": repr(exc), "updated_at": iso_now()}
 
     if isinstance(payload, dict):
@@ -421,8 +429,40 @@ def fetch_fmp_calendar() -> dict[str, Any]:
     return result
 
 
+def fetch_manual_calendar() -> dict[str, Any]:
+    path = DATA / "macro" / "news_calendar.csv"
+    try:
+        from gold_trader.calendar import NewsCalendar
+
+        calendar = NewsCalendar.load(path)
+    except Exception as exc:
+        return {"state": "manual_error", "source": "manual_news_calendar_csv", "events": [], "error": repr(exc), "updated_at": iso_now()}
+
+    now = now_utc()
+    start = now - timedelta(hours=12)
+    end = now + timedelta(days=int(os.getenv("GOLD_MANUAL_MACRO_DAYS_AHEAD", "7")))
+    events = [
+        {
+            "date": event.timestamp.isoformat(),
+            "time": event.timestamp.isoformat(),
+            "event": event.event,
+            "impact": event.impact,
+            "country": "USD",
+        }
+        for event in calendar.events
+        if start <= event.timestamp <= end
+    ]
+    return {
+        "state": "manual_calendar" if events else "manual_empty",
+        "source": "manual_news_calendar_csv",
+        "events": events,
+        "updated_at": iso_now(),
+        "path": str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path),
+    }
+
+
 def compute_macro_state(calendar: dict[str, Any]) -> dict[str, Any]:
-    if calendar.get("state") in {"missing_key", "error"}:
+    if calendar.get("state") in {"missing_key", "error", "manual_empty", "manual_error"}:
         return {"state": "unknown", "source": "fmp", "blockers": ["macro feed unavailable"], "updated_at": iso_now(), "error": calendar.get("error")}
 
     events = calendar.get("events") or []
@@ -452,8 +492,22 @@ def compute_macro_state(calendar: dict[str, Any]) -> dict[str, Any]:
             )
 
     if blockers:
-        return {"state": "blocked", "source": "fmp", "blockers": blockers, "next_event": next_event, "updated_at": iso_now()}
-    return {"state": "clear", "source": "fmp", "blockers": [], "next_event": next_event, "updated_at": iso_now()}
+        return {
+            "state": "blocked",
+            "source": calendar.get("source") or "fmp",
+            "blockers": blockers,
+            "next_event": next_event,
+            "updated_at": iso_now(),
+            "primary_error": calendar.get("primary_error"),
+        }
+    return {
+        "state": "clear",
+        "source": calendar.get("source") or "fmp",
+        "blockers": [],
+        "next_event": next_event,
+        "updated_at": iso_now(),
+        "primary_error": calendar.get("primary_error"),
+    }
 
 
 def read_sentiment_state() -> dict[str, Any]:

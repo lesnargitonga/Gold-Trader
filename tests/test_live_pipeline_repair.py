@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 
 from gold_trader.core import live_pipeline_repair as lpr
@@ -87,3 +88,32 @@ def test_build_provider_health_includes_auxiliary_feeds(tmp_path: Path, monkeypa
     assert health["cross_market"]["notes"] == ["DXY -0.2%"]
     assert health["options"]["state"] == "manual_proxy"
     assert health["fmp_macro"]["error"] == "403"
+
+
+def test_empty_manual_macro_calendar_remains_unknown(tmp_path: Path, monkeypatch) -> None:
+    _patch_roots(monkeypatch, tmp_path)
+    (tmp_path / "data" / "macro").mkdir(parents=True)
+    (tmp_path / "data" / "macro" / "news_calendar.csv").write_text("timestamp,event,impact\n")
+
+    calendar = lpr.fetch_manual_calendar()
+    macro = lpr.compute_macro_state(calendar)
+
+    assert calendar["state"] == "manual_empty"
+    assert macro["state"] == "unknown"
+
+
+def test_manual_macro_calendar_can_block_without_fmp(tmp_path: Path, monkeypatch) -> None:
+    _patch_roots(monkeypatch, tmp_path)
+    event_time = lpr.now_utc() + timedelta(minutes=5)
+    (tmp_path / "data" / "macro").mkdir(parents=True)
+    (tmp_path / "data" / "macro" / "news_calendar.csv").write_text(
+        "timestamp,event,impact\n" + f"{event_time.isoformat()},CPI,high\n"
+    )
+
+    calendar = lpr.fetch_manual_calendar()
+    macro = lpr.compute_macro_state(calendar)
+
+    assert calendar["state"] == "manual_calendar"
+    assert macro["state"] == "blocked"
+    assert macro["source"] == "manual_news_calendar_csv"
+    assert macro["blockers"][0]["event"] == "CPI"
