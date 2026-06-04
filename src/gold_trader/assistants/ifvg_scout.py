@@ -447,6 +447,7 @@ def run_scout_scan(
     state["next_scan_at"] = (now + timedelta(seconds=interval)).isoformat()
     state["scan_count"] = int(state.get("scan_count") or 0) + 1
     state["openai_configured"] = bool(resolve_openai_api_key())
+    levels = load_market_levels(LEVELS_CFG)
 
     if not bars:
         state["status"] = "offline"
@@ -467,7 +468,6 @@ def run_scout_scan(
     macro_frame = load_macro_frame(DATA_DIR / "macro")
     if not macro_frame.names():
         macro_frame = None
-    levels = load_market_levels(LEVELS_CFG)
     calendar = NewsCalendar.load(NEWS_CAL)
 
     prev_setup = state.get("setup") or {}

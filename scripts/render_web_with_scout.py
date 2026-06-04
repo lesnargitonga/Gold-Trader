@@ -40,8 +40,11 @@ def scout_loop() -> None:
         try:
             n += 1
             run_full_engine()
-            primary_tf = read_scout_timeframe()
-            run_scout_scan(primary_tf=primary_tf, force_research=(n % research_every) == 0)
+            try:
+                primary_tf = read_scout_timeframe()
+                run_scout_scan(primary_tf=primary_tf, force_research=(n % research_every) == 0)
+            except Exception as exc:
+                log_scout(f"legacy scout skipped: {exc!r}")
         except Exception as exc:
             log_scout(f"loop error: {exc!r}")
         time.sleep(SCOUT_INTERVAL)
