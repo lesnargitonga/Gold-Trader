@@ -376,6 +376,19 @@ def provider_health(decision: dict[str, Any], live_context: dict[str, Any]) -> d
     }
 
 
+def get_decision_for_api(*, refresh: bool = False) -> dict[str, Any]:
+    """Fast read for the web UI; full harden only when requested or state is stale."""
+    path = find_decision_path()
+    if refresh:
+        return harden_decision()
+    state = read_json(path, {})
+    if state.get("hardened") and state.get("score_decomposition"):
+        return state
+    if state:
+        return harden_decision(state)
+    return harden_decision({})
+
+
 def harden_decision(decision: dict[str, Any] | None = None) -> dict[str, Any]:
     path = find_decision_path()
     state = dict(decision or read_json(path, {}))
