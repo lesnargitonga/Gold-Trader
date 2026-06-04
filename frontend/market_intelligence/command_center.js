@@ -498,7 +498,7 @@
   }
 
   function marketPage(d) {
-    var ph = d.provider_health_summary || {};
+    var ph = state.health || d.provider_health_summary || {};
     function providerDetail(v) {
       var parts = [];
       if (v.source) parts.push("Source: " + v.source);

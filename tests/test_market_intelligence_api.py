@@ -110,9 +110,42 @@ class TestMarketIntelligenceApi:
 
     def test_provider_health_endpoint_normalizes_stale_dict_state(self) -> None:
         stale = {"cot": {"state": {"state": "unknown", "source": "not_connected"}, "label": "COT"}}
-        with patch.object(mi, "read_json", return_value=stale):
+        with (
+            patch.object(mi, "get_decision_for_api", side_effect=RuntimeError("boom")),
+            patch.object(mi, "read_json", return_value=stale),
+        ):
             status, _ctype, body = self.get("/api/provider-health")
         payload = json.loads(body)
         assert status == 200
         assert payload["cot"]["state"] == "unknown"
         assert payload["cot"]["source"] == "not_connected"
+
+    def test_decision_endpoint_recomputes_fresh_provider_health(self) -> None:
+        decision = {
+            "timestamp_utc": "2026-06-04T10:00:00+00:00",
+            "symbol": "XAUUSD",
+            "cloud_status": {"data_provider": "twelvedata", "candles_loaded": 20, "execution_mode": "paper"},
+            "timeframe_reads": [{"timeframe": "M15", "candles": 20}],
+            "provider_health_summary": {
+                "chart_fallback": {"state": "available", "severity": "ok", "label": "old"},
+            },
+            "live_market_context": {
+                "macro_state": {"state": "unknown", "source": "fmp", "error": "<HTTPError 403: 'Forbidden'>"},
+                "spread_state": {
+                    "state": "unknown_nonfatal_in_paper",
+                    "source": "twelvedata",
+                    "error": "<HTTPError 429: 'Too Many Requests'>",
+                },
+                "volatility_state": {"state": "normal", "source": "twelvedata_M15"},
+            },
+        }
+        with patch.dict(os.environ, {}, clear=True), patch.object(mi, "get_decision_for_api", return_value=decision):
+            status, _ctype, body = self.get("/api/decision")
+        payload = json.loads(body)
+        health = payload["provider_health_summary"]
+        assert status == 200
+        assert health["chart_fallback"]["state"] == "chart_only"
+        assert health["chart_fallback"]["severity"] == "warning"
+        assert "403" in health["fmp_macro"]["message"]
+        assert "429" in health["spread"]["message"]
+        assert payload["market_intelligence_summary"]["chart"] == "chart_only"

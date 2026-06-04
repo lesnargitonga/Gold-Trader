@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from gold_trader.core.market_intelligence_ux import (
+    LIVE_CONTEXT_PATH,
     PROVIDER_HEALTH_PATH,
     get_decision_for_api,
+    provider_health,
     read_json,
 )
 
@@ -120,7 +122,7 @@ def _candles(tf: str, count: int | None = None) -> dict[str, Any]:
 
 
 def _summary_payload() -> dict[str, Any]:
-    decision = get_decision_for_api()
+    decision = _decision_payload()
     return {
         "config": {
             "symbol": decision.get("symbol") or os.getenv("GOLD_SYMBOL", "XAUUSD"),
@@ -154,6 +156,48 @@ def _normalize_provider_health_payload(data: Any) -> dict[str, Any]:
     return out
 
 
+def _provider_health_for_decision(decision: dict[str, Any]) -> dict[str, Any]:
+    context = decision.get("live_market_context")
+    if not isinstance(context, dict):
+        context = read_json(LIVE_CONTEXT_PATH, {})
+    if not isinstance(context, dict):
+        context = {}
+    return _normalize_provider_health_payload(provider_health(decision, context))
+
+
+def _market_summary_from_health(health: dict[str, Any]) -> dict[str, Any]:
+    def state(key: str) -> str:
+        row = health.get(key)
+        if isinstance(row, dict):
+            return str(row.get("state") or "unknown")
+        return "unknown"
+
+    return {
+        "macro": state("fmp_macro"),
+        "sentiment": state("finnhub_sentiment"),
+        "spread": state("spread"),
+        "volatility": state("volatility"),
+        "cme": state("cme"),
+        "options": state("options"),
+        "cot": state("cot"),
+        "chart": state("chart_fallback"),
+    }
+
+
+def _decision_payload(*, refresh: bool = False) -> dict[str, Any]:
+    decision = get_decision_for_api(refresh=refresh)
+    if not isinstance(decision, dict):
+        return {}
+    try:
+        health = _provider_health_for_decision(decision)
+        decision = dict(decision)
+        decision["provider_health_summary"] = health
+        decision["market_intelligence_summary"] = _market_summary_from_health(health)
+    except Exception:
+        pass
+    return decision
+
+
 class Handler(SimpleHTTPRequestHandler):
     def _send_bytes(self, body: bytes, content_type: str, *, status: int = 200, cache: str = "no-store") -> None:
         self.send_response(status)
@@ -169,15 +213,18 @@ class Handler(SimpleHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         if path == "/api/decision":
             refresh = (query.get("refresh") or ["0"])[0].lower() in {"1", "true", "yes"}
-            return self.json(get_decision_for_api(refresh=refresh))
+            return self.json(_decision_payload(refresh=refresh))
         if path == "/api/provider-health" or path == "/api/health":
-            data = read_json(PROVIDER_HEALTH_PATH, {})
-            if not data:
-                data = get_decision_for_api().get("provider_health_summary", {})
+            try:
+                data = _provider_health_for_decision(get_decision_for_api())
+            except Exception:
+                data = read_json(PROVIDER_HEALTH_PATH, {})
+                if not data:
+                    data = get_decision_for_api().get("provider_health_summary", {})
             data = _normalize_provider_health_payload(data)
             return self.json({"ok": True, **data} if path == "/api/health" else data)
         if path == "/api/market-intelligence":
-            return self.json(get_decision_for_api().get("market_intelligence_summary", {}))
+            return self.json(_decision_payload().get("market_intelligence_summary", {}))
         if path == "/api/summary":
             return self.json(_summary_payload())
         if path == "/api/candles":
