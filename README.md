@@ -21,7 +21,8 @@ monitoring, research, and operator controls. Cron drives the loop.
 > **React command center:** [docs/REACT_COMMAND_CENTER.md](docs/REACT_COMMAND_CENTER.md) ·
 > **React v2 (polished UI):** [docs/REACT_COMMAND_CENTER_V2.md](docs/REACT_COMMAND_CENTER_V2.md) ·
 > **React v3 (live data binding):** [docs/REACT_COMMAND_CENTER_V3.md](docs/REACT_COMMAND_CENTER_V3.md) ·
-> **Pro command center:** [docs/PRO_COMMAND_CENTER.md](docs/PRO_COMMAND_CENTER.md)
+> **Pro command center:** [docs/PRO_COMMAND_CENTER.md](docs/PRO_COMMAND_CENTER.md) ·
+> **Command center v2 (market cockpit):** [docs/COMMAND_CENTER_V2.md](docs/COMMAND_CENTER_V2.md)
 
 ---
 
