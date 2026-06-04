@@ -5,12 +5,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from gold_trader.backtest import (
+from gold_trader.backtest import run_backtest
+from gold_trader.backtest.ltf_trigger import (
     Engulf,
     MomentumDisplacement,
     StructureBreak,
     make_ltf_entry_resolver,
-    run_backtest,
 )
 from gold_trader.models import BacktestConfig, MarketBar, Side, TradeSignal
 

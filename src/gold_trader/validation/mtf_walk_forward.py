@@ -18,12 +18,11 @@ from typing import Iterable, Sequence
 from ..backtest import (
     BacktestSummary,
     HTFIndicatorCache,
-    LTFTrigger,
     build_indicator_caches,
-    make_ltf_entry_resolver,
     run_mtf_backtest,
     summarize_backtest,
 )
+from ..backtest.ltf_trigger import LTFTrigger, make_ltf_entry_resolver
 from ..backtest.htf_indicators import build_indicator_cache
 from ..backtest.engine import EntryPriceResolver
 from ..data import MTFBundle, build_mtf_bundle, load_bars_from_csv
