@@ -402,13 +402,13 @@
         })
         .join("") || "<li>No active checklist</li>") +
       '</ul></div></div><div class="panel"><h4>Why</h4><div class="body"><ul>' +
-      ((d.readable_reasons || d.reasons || [])
+      ((d.readable_reasons || [])
         .map(function (x) {
           return "<li>" + esc(itemText(x)) + "</li>";
         })
         .join("") || "<li>No items</li>") +
       '</ul></div></div><div class="panel"><h4>Blockers</h4><div class="body"><ul>' +
-      ((d.readable_blockers || d.blockers || [])
+      ((d.readable_blockers || [])
         .map(function (x) {
           return "<li>" + esc(itemText(x)) + "</li>";
         })
@@ -417,6 +417,14 @@
       contextPanel(d) +
       "</div>"
     );
+  }
+
+  function feedLabel(value) {
+    var text = String(value == null ? "unknown" : value).toLowerCase();
+    if (text === "dead") return "compressed";
+    if (text === "unknown_nonfatal_in_paper") return "unavailable (paper)";
+    if (text === "ok_no_high_impact") return "clear (no high-impact events)";
+    return String(value == null ? "unknown" : value);
   }
 
   function contextPanel(d) {
@@ -428,15 +436,15 @@
       '</b></div><div class="ctx"><span>Provider</span><b>' +
       esc(safe(c.data_provider, "—")) +
       '</b></div><div class="ctx"><span>Volatility</span><b>' +
-      esc(safe(m.volatility, "unknown")) +
+      esc(feedLabel(safe(m.volatility, "unknown"))) +
       '</b></div><div class="ctx"><span>Spread</span><b class="' +
-      (m.spread === "unknown" ? "amber" : "") +
+      (String(m.spread || "").indexOf("unknown") >= 0 ? "amber" : "") +
       '">' +
-      esc(safe(m.spread, "unknown")) +
+      esc(feedLabel(safe(m.spread, "unknown"))) +
       '</b></div><div class="ctx"><span>Macro</span><b class="' +
       (m.macro === "unknown" ? "amber" : "") +
       '">' +
-      esc(safe(m.macro, "unknown")) +
+      esc(feedLabel(safe(m.macro, "unknown"))) +
       '</b></div><div class="ctx"><span>Sentiment</span><b>' +
       esc(safe(m.sentiment, "unknown")) +
       '</b></div><div class="ctx"><span>Orders</span><b class="amber">' +
@@ -468,6 +476,7 @@
           esc(safe(r.score, "—")) +
           "</p><p>Candles: " +
           esc(safe(r.candles, 0)) +
+          (r.data_state === "unavailable" ? ' <span class="amber">(feed unavailable)</span>' : "") +
           "</p></div>"
         );
       }).join("") +

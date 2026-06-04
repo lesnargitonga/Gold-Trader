@@ -154,6 +154,22 @@ def cache_path_for_tf(tf: str) -> Path:
     return DATA / "cache" / "twelvedata" / f"{twelve_symbol().replace('/', '_')}_{tf.upper()}.json"
 
 
+def read_twelvedata_repo_cache(tf: str, limit: int = 280) -> list[dict[str, Any]]:
+    try:
+        from gold_trader.data.twelvedata import _cache_path, _normalize_rows, _read_cache_stale, interval_for_timeframe
+
+        interval = interval_for_timeframe(tf.upper())
+        if not interval:
+            return []
+        path = _cache_path(ROOT, twelve_symbol(), interval)
+        raw = _read_cache_stale(path)
+        if not raw:
+            return []
+        return _normalize_rows(raw)[-limit:]
+    except Exception:
+        return []
+
+
 def read_cached_candles(tf: str, max_age_seconds: int = 900) -> list[dict[str, Any]]:
     payload = read_json(cache_path_for_tf(tf), {})
     if not isinstance(payload, dict):
@@ -233,6 +249,23 @@ def fetch_twelve_candles(tf: str, count: int | None = None) -> tuple[list[dict[s
     tf = tf.upper()
     count = count or FETCH_COUNTS.get(tf, 280)
 
+    cached = read_cached_candles(tf) or read_twelvedata_repo_cache(tf, limit=count)
+    if cached:
+        return cached[-count:], "using cached candles"
+
+    provider_error = "provider returned no candles"
+    try:
+        from gold_trader.data.twelvedata import candles_for_chart  # type: ignore
+
+        payload = candles_for_chart(tf, symbol=twelve_symbol(), count=count, repo=ROOT)
+        candles = payload.get("candles") or []
+        if payload.get("ok") and candles:
+            write_cached_candles(tf, candles)
+            return candles, payload.get("cache_note")
+        provider_error = str(payload.get("error") or provider_error)
+    except Exception as exc:
+        provider_error = repr(exc)
+
     try:
         from gold_trader.data.twelvedata import fetch_candles  # type: ignore
 
@@ -241,9 +274,7 @@ def fetch_twelve_candles(tf: str, count: int | None = None) -> tuple[list[dict[s
             write_cached_candles(tf, candles)
             return candles, None
     except Exception as exc:
-        provider_error = repr(exc)
-    else:
-        provider_error = "provider returned no candles"
+        provider_error = f"{provider_error}; fetch={exc!r}"
 
     candles, direct_error = fetch_twelve_candles_direct(tf, count=count)
     return candles, None if candles else f"{provider_error}; direct={direct_error}"
@@ -596,6 +627,22 @@ def alignment_audit(decision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def dedupe_text_lines(items: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            text = clean_blocker_text(str(item.get("label") or item.get("impact") or ""))
+        else:
+            text = clean_blocker_text(str(item))
+        key = " ".join(text.lower().split())
+        if not key or any(key in s or s in key for s in seen):
+            continue
+        seen.append(key)
+        out.append(text)
+    return out
+
+
 def clean_blocker_text(text: str) -> str:
     text = text.strip()
     replacements = {
@@ -607,7 +654,13 @@ def clean_blocker_text(text: str) -> str:
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(
+        r"\.\s*Grade-A readiness is blocked until (?:this feed is healthy|macro feed is healthy|sentiment feed is healthy)\.?$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
@@ -858,6 +911,15 @@ def repair_and_harden() -> dict[str, Any]:
     write_json(LOGS / "spread_state.json", context["spread_state"])
     write_json(LOGS / "volatility_state.json", context["volatility_state"])
 
+    market = decision.setdefault("market_context", {})
+    if isinstance(market, dict):
+        market["volatility_state"] = context["volatility_state"].get("state")
+        market["macro_state"] = context["macro_state"].get("state")
+        market["sentiment_state"] = context["sentiment_state"].get("state")
+        market["spread_state"] = context["spread_state"].get("state")
+        if context["spread_state"].get("spread_points") is not None:
+            market["spread_points"] = context["spread_state"].get("spread_points")
+
     hardened = harden_scores(decision, context)
 
     decision["final_score_raw_before_hardening"] = decision.get("final_score")
@@ -886,15 +948,7 @@ def repair_and_harden() -> dict[str, Any]:
             blockers.append(text)
     decision["blockers"] = blockers
 
-    reasons = []
-    for item in decision.get("reasons") or []:
-        if item and str(item) not in reasons:
-            reasons.append(str(item))
-    for missing in hardened["missing_inputs"]:
-        text = f"{missing}. Grade-A readiness is blocked until this feed is healthy."
-        if text not in reasons:
-            reasons.append(text)
-    decision["reasons"] = reasons
+    decision["reasons"] = dedupe_text_lines(decision.get("reasons") or [])
 
     if not hardened["grade_allowed"]:
         decision["action"] = "WAIT_HARD_BLOCK" if hardened["hard_blocks"] else "WAIT"

@@ -186,11 +186,15 @@ def build_tf_alignment(decision: dict[str, Any]) -> dict[str, Any]:
         if sweep:
             liquidity_confirmed = True
 
+        data_state = str(read.get("data_state") or "").lower()
+        if candles <= 0 and not data_state:
+            data_state = "unavailable"
         by_tf[tf] = {
             "bias": read.get("bias") or "unknown",
             "ifvg_side": read.get("ifvg_side") or "none",
             "candles": candles,
             "aligned": aligned,
+            "data_state": data_state,
             "score": int(_num(read.get("score"), 0)),
             "displacement": displacement,
             "liquidity_sweep": sweep,
@@ -219,6 +223,54 @@ def _feed_state(container: dict[str, Any], key: str, fallback: Any = None) -> An
     return fallback
 
 
+def normalize_feed_display(value: Any) -> str:
+    text = str(value or "unknown").strip().lower()
+    mapping = {
+        "dead": "compressed",
+        "unknown_nonfatal_in_paper": "unavailable (paper)",
+        "ok_no_high_impact": "clear (no high-impact events)",
+        "missing_key": "not configured",
+    }
+    return mapping.get(text, str(value or "unknown"))
+
+
+def _reason_bucket(text: str) -> str:
+    low = text.lower()
+    if "macro" in low or "economic calendar" in low:
+        return "macro"
+    if "spread" in low:
+        return "spread"
+    if "sentiment" in low:
+        return "sentiment"
+    if "volatility" in low or "atr" in low:
+        return "volatility"
+    if "candle feed" in low or "timeframe candle" in low:
+        return "candles"
+    if "grade-a execution" in low or "not clean enough" in low:
+        return "setup_quality"
+    return " ".join(low.split())
+
+
+def _dedupe_lines(items: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: list[str] = []
+    buckets: set[str] = set()
+    for item in items:
+        text = human_blocker(item if isinstance(item, str) else str((item or {}).get("label", "")))
+        bucket = _reason_bucket(text)
+        if bucket in buckets:
+            continue
+        key = " ".join(text.lower().split())
+        if not key:
+            continue
+        if key in seen or any(key in prev or prev in key for prev in seen):
+            continue
+        buckets.add(bucket)
+        seen.append(key)
+        out.append(text)
+    return out
+
+
 def missing_inputs(decision: dict[str, Any], live_context: dict[str, Any]) -> list[dict[str, str]]:
     market = decision.get("market_context") or {}
     live = live_context or {}
@@ -226,20 +278,34 @@ def missing_inputs(decision: dict[str, Any], live_context: dict[str, Any]) -> li
 
     spread = market.get("spread_points")
     spread_state = _feed_state(live, "spread_state") or _feed_state(market, "spread_state")
-    if spread is None and spread_state not in {"ok", "normal", "tight"}:
+    if spread is None and str(spread_state).lower() not in {"ok", "normal", "tight", "unknown_nonfatal_in_paper"}:
         missing.append({"key": "spread", "label": "Spread feed missing", "impact": "session/spread score capped; live orders blocked"})
 
     macro = _feed_state(live, "macro_state") or _feed_state(market, "macro_state")
-    if not macro or str(macro).lower() in {"unknown", "unavailable", "missing", "error"}:
+    macro_ok = {"ok", "clear", "mixed", "neutral", "ok_no_high_impact", "caution", "near_event"}
+    if not macro or str(macro).lower() not in macro_ok:
         missing.append({"key": "macro", "label": "Macro calendar missing", "impact": "macro regime score = 0 and Grade-A blocked"})
 
     sentiment = _feed_state(live, "sentiment_state") or _feed_state(market, "sentiment_state")
     if not sentiment or str(sentiment).lower() in {"unknown", "unavailable", "missing", "error"}:
         missing.append({"key": "sentiment", "label": "Sentiment feed missing", "impact": "sentiment gate score = 0 and Grade-A blocked"})
 
-    volatility = _feed_state(market, "volatility_state") or _feed_state(live, "volatility_state")
-    if not volatility or str(volatility).lower() in {"unknown", "unavailable", "missing", "error"}:
+    volatility = _feed_state(live, "volatility_state") or _feed_state(market, "volatility_state")
+    vol_s = str(volatility).lower()
+    if not volatility or vol_s in {"unknown", "unavailable", "missing", "error"}:
         missing.append({"key": "volatility", "label": "Volatility state missing", "impact": "volatility score = 0"})
+
+    zero_candle_tfs = [
+        str(r.get("timeframe", "")).upper()
+        for r in (decision.get("timeframe_reads") or [])
+        if isinstance(r, dict) and int(r.get("candles") or 0) <= 0
+    ]
+    if zero_candle_tfs:
+        missing.append({
+            "key": "candles",
+            "label": f"Candle feed missing on {', '.join(zero_candle_tfs)}",
+            "impact": "timeframe alignment capped until feeds restore",
+        })
 
     age = age_seconds_from_state(decision)
     if age is None or age >= int(os.getenv("GOLD_STALE_DECISION_SECONDS", "300")):
@@ -268,10 +334,12 @@ def score_decomposition(decision: dict[str, Any], live_context: dict[str, Any], 
 
     macro_raw = _feed_state(live, "macro_state") or _feed_state(market, "macro_state") or "unknown"
     macro_s = str(macro_raw).lower()
-    if macro_s in {"clear", "mixed", "neutral", "ok"}:
+    if macro_s in {"clear", "mixed", "neutral", "ok", "ok_no_high_impact"}:
         macro_score = 20
     elif macro_s in {"caution", "near_event"}:
         macro_score = 8
+    elif macro_s == "blocked":
+        macro_score = 0
     else:
         macro_score = 0
 
@@ -289,15 +357,23 @@ def score_decomposition(decision: dict[str, Any], live_context: dict[str, Any], 
 
     session = str(market.get("session") or "unknown").lower()
     session_ok = session in _ALLOWED_SESSIONS
-    spread_ok = market.get("spread_points") is not None or str(_feed_state(live, "spread_state", "")).lower() in {"ok", "normal", "tight"}
+    spread_raw = str(_feed_state(live, "spread_state") or _feed_state(market, "spread_state") or "").lower()
+    spread_ok = market.get("spread_points") is not None or spread_raw in {
+        "ok", "normal", "tight", "unknown_nonfatal_in_paper",
+    }
     session_spread = 0
     if session_ok:
         session_spread += 5
     if spread_ok:
         session_spread += 5
 
-    vol = str(_feed_state(market, "volatility_state") or _feed_state(live, "volatility_state") or "unknown").lower()
-    volatility = 10 if vol in {"normal", "tradable", "ok"} else 0
+    vol = str(_feed_state(live, "volatility_state") or _feed_state(market, "volatility_state") or "unknown").lower()
+    if vol in {"normal", "tradable", "ok"}:
+        volatility = 10
+    elif vol in {"compressed", "dead", "high"}:
+        volatility = 5
+    else:
+        volatility = 0
 
     components = {
         "timeframe_alignment": {"score": int(tf_score), "max": 25, "label": "Timeframe Alignment"},
@@ -332,6 +408,18 @@ def human_blocker(text: str) -> str:
         return "Sentiment feed is unavailable. Grade-A readiness is blocked until sentiment feed is healthy."
     if "only" in low and "timeframes align" in low:
         return s.replace("timeframes", "timeframes").replace("need at least", "required:")
+    if "volatility" in low and "dead" in low:
+        return "M15 volatility is compressed; avoid chasing until range expands."
+    if "fresh sentiment missing" in low or ("sentiment" in low and "missing" in low and "macro" not in low):
+        return "Sentiment feed is unavailable. Grade-A readiness is blocked until sentiment feed is healthy."
+    if "macro calendar missing" in low:
+        return "Macro calendar is unavailable. Grade-A readiness is blocked until macro feed is healthy."
+    if "spread feed missing" in low:
+        return "Spread feed is unavailable. Paper analysis may continue, but live orders are blocked."
+    if "volatility state missing" in low:
+        return "Volatility state is unavailable. Grade-A readiness is blocked until M15 ATR feed is healthy."
+    if "timeframe candle feed missing" in low or "candle feed missing on" in low:
+        return s if s.endswith(".") else f"{s}."
     return s
 
 
@@ -398,10 +486,10 @@ def harden_decision(decision: dict[str, Any] | None = None) -> dict[str, Any]:
     score = score_decomposition(state, live_context, align, missing)
     age = source_age_status(age_seconds_from_state(state))
 
-    readable_blockers = [human_blocker(x) for x in (state.get("blockers") or [])]
+    readable_blockers = _dedupe_lines(list(state.get("blockers") or []) + list(state.get("hard_blocks") or []))
     for item in missing:
-        if item["label"] not in readable_blockers:
-            readable_blockers.append(item["label"])
+        label = item["label"] if isinstance(item, dict) else str(item)
+        readable_blockers = _dedupe_lines(readable_blockers + [label])
 
     # Strict readiness: unknown context and stale state cannot be Grade A.
     strict_unknown = os.getenv("GOLD_STRICT_UNKNOWN_CONTEXT", "true").lower() != "false"
@@ -440,13 +528,18 @@ def harden_decision(decision: dict[str, Any] | None = None) -> dict[str, Any]:
         "alignment_audit": {k: v for k, v in align.items() if k != "by_tf"},
         "watching_for": watching_for(state, align, missing),
         "readable_blockers": readable_blockers,
-        "readable_reasons": [human_blocker(x) for x in (state.get("reasons") or [])],
+        "readable_reasons": _dedupe_lines(state.get("reasons") or []),
         "provider_health_summary": provider_health(state, live_context),
         "market_intelligence_summary": {
-            "macro": _feed_state(live_context, "macro_state") or _feed_state(state.get("market_context") or {}, "macro_state") or "unknown",
-            "sentiment": _feed_state(live_context, "sentiment_state") or _feed_state(state.get("market_context") or {}, "sentiment_state") or "unknown",
-            "spread": _feed_state(live_context, "spread_state") or ("ok" if (state.get("market_context") or {}).get("spread_points") is not None else "unknown"),
-            "volatility": _feed_state(state.get("market_context") or {}, "volatility_state") or "unknown",
+            "macro": normalize_feed_display(_feed_state(live_context, "macro_state") or _feed_state(state.get("market_context") or {}, "macro_state")),
+            "sentiment": normalize_feed_display(_feed_state(live_context, "sentiment_state") or _feed_state(state.get("market_context") or {}, "sentiment_state")),
+            "spread": normalize_feed_display(
+                _feed_state(live_context, "spread_state")
+                or ("ok" if (state.get("market_context") or {}).get("spread_points") is not None else "unknown")
+            ),
+            "volatility": normalize_feed_display(
+                _feed_state(live_context, "volatility_state") or _feed_state(state.get("market_context") or {}, "volatility_state")
+            ),
             "cme": "not_connected",
             "options": "not_connected",
             "cot": _feed_state(live_context, "cot_state") or "unknown",
