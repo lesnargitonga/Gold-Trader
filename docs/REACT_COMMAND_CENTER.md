@@ -11,11 +11,15 @@ This patch replaces the long server-rendered command page with a React cockpit s
 - No build step and no Node dependency: React is loaded from CDN, and the Python server serves the app.
 - Render runner that keeps the full-system IFVG loop running in the background.
 
-## Render start command
+## Render start command (v2 recommended)
 
 ```bash
-PYTHONPATH=src python3 scripts/render_react_command_center.py
+PYTHONPATH=src python3 scripts/render_react_command_center_v2.py
 ```
+
+`render_react_command_center.py` delegates to v2 for backward compatibility.
+
+See [REACT_COMMAND_CENTER_V2.md](REACT_COMMAND_CENTER_V2.md) for v2 fixes (decision path search, chart errors, source age).
 
 ## Required env
 

@@ -18,7 +18,8 @@ monitoring, research, and operator controls. Cron drives the loop.
 > **Command center (Render):** [docs/ABSOLUTE_GOLD_COMMAND_CENTER.md](docs/ABSOLUTE_GOLD_COMMAND_CENTER.md) ·
 > **Multi-page app:** [docs/ABSOLUTE_GOLD_APP.md](docs/ABSOLUTE_GOLD_APP.md) ·
 > **Full market awareness:** [docs/FULL_MARKET_AWARENESS.md](docs/FULL_MARKET_AWARENESS.md) ·
-> **React command center:** [docs/REACT_COMMAND_CENTER.md](docs/REACT_COMMAND_CENTER.md)
+> **React command center:** [docs/REACT_COMMAND_CENTER.md](docs/REACT_COMMAND_CENTER.md) ·
+> **React v2 (polished UI):** [docs/REACT_COMMAND_CENTER_V2.md](docs/REACT_COMMAND_CENTER_V2.md)
 
 ---
 
