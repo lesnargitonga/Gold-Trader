@@ -497,6 +497,43 @@
     );
   }
 
+  function marketLevels(d) {
+    var summary = d.market_levels_summary || {};
+    var levels = summary.levels || [];
+    return (
+      '<section class="card wide"><h3>Options / OI Levels</h3><div class="tfGrid">' +
+      (levels.length
+        ? levels
+            .slice(0, 12)
+            .map(function (level) {
+              var distance = level.distance_points;
+              return (
+                '<div class="tfCard"><h5>' +
+                esc(fmt(level.price, 2)) +
+                "</h5><p>" +
+                esc(level.kind || "level") +
+                (level.strength ? " · " + esc(level.strength) : "") +
+                "</p><p>" +
+                esc(level.label || "Manual market level") +
+                "</p><p>Distance: " +
+                esc(distance === undefined || distance === null ? "—" : fmt(distance, 2)) +
+                "</p><p>" +
+                esc(summary.state || "missing") +
+                " · " +
+                esc(summary.source || "none") +
+                "</p></div>"
+              );
+            })
+            .join("")
+        : '<div class="tfCard"><h5>No Levels</h5><p>' +
+          esc(summary.state || "missing") +
+          "</p><p>" +
+          esc(summary.source || "config/market_levels.json") +
+          "</p></div>") +
+      "</div></section>"
+    );
+  }
+
   function marketPage(d) {
     var ph = state.health || d.provider_health_summary || {};
     function providerDetail(v) {
@@ -530,6 +567,7 @@
         })
         .join("") +
       "</div></section>" +
+      marketLevels(d) +
       lists(d) +
       "</div>"
     );

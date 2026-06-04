@@ -202,3 +202,26 @@ def test_candles_for_chart_honors_small_count_with_csv_fallback(tmp_path: Path) 
     assert out["count"] == 1
     assert len(out["candles"]) == 1
     assert out["candles"][0]["close"] == 3314.0
+
+
+def test_candles_for_chart_caches_fallback_payload(tmp_path: Path) -> None:
+    yahoo_rows = [
+        {"time": "2026-06-04T10:00:00+00:00", "open": 3300, "high": 3310, "low": 3295, "close": 3305, "volume": 10},
+        {"time": "2026-06-04T10:15:00+00:00", "open": 3305, "high": 3312, "low": 3301, "close": 3308, "volume": 11},
+    ]
+    with patch.dict("os.environ", {"GOLD_CHART_FALLBACK_CACHE_SECONDS": "300"}, clear=False):
+        with (
+            patch("gold_trader.data.twelvedata._fetch_twelvedata_rows", return_value=([], "rate limited", False)),
+            patch("gold_trader.data.twelvedata._fetch_yahoo_chart_rows", return_value=(yahoo_rows, None, "GC=F")),
+        ):
+            first = candles_for_chart("M15", symbol="XAUUSD", count=2, repo=tmp_path)
+        with (
+            patch("gold_trader.data.twelvedata._fetch_twelvedata_rows", side_effect=AssertionError("Twelve Data should be cached")),
+            patch("gold_trader.data.twelvedata._fetch_yahoo_chart_rows", side_effect=AssertionError("Yahoo should be cached")),
+        ):
+            second = candles_for_chart("M15", symbol="XAUUSD", count=1, repo=tmp_path)
+    assert first["provider"] == "yahoo_gc_futures"
+    assert second["provider"] == "yahoo_gc_futures"
+    assert second["count"] == 1
+    assert second["candles"][0]["close"] == 3308
+    assert "cached" in second["cache_note"].lower()

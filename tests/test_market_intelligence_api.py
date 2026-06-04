@@ -124,6 +124,7 @@ class TestMarketIntelligenceApi:
         decision = {
             "timestamp_utc": "2026-06-04T10:00:00+00:00",
             "symbol": "XAUUSD",
+            "current_price": 4501,
             "cloud_status": {"data_provider": "twelvedata", "candles_loaded": 20, "execution_mode": "paper"},
             "timeframe_reads": [{"timeframe": "M15", "candles": 20}],
             "provider_health_summary": {
@@ -149,3 +150,28 @@ class TestMarketIntelligenceApi:
         assert "403" in health["fmp_macro"]["message"]
         assert "429" in health["spread"]["message"]
         assert payload["market_intelligence_summary"]["chart"] == "chart_only"
+        assert payload["market_levels_summary"]["state"] in {"manual_proxy", "missing"}
+
+    def test_market_levels_endpoint_returns_manual_proxy_levels(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        cfg.mkdir()
+        (cfg / "market_levels.json").write_text(
+            json.dumps(
+                {
+                    "description": "manual",
+                    "levels": [
+                        {"price": 4400, "kind": "put_wall", "label": "4400 put wall", "strength": "2"},
+                        {"price": 4500, "kind": "round", "label": "4500 round"},
+                    ],
+                }
+            )
+        )
+        decision = {"current_price": 4498, "cloud_status": {"execution_mode": "paper"}}
+        with patch.object(mi, "ROOT", tmp_path), patch.object(mi, "get_decision_for_api", return_value=decision):
+            status, _ctype, body = self.get("/api/market-levels")
+        payload = json.loads(body)
+        assert status == 200
+        assert payload["state"] == "manual_proxy"
+        assert payload["levels"][0]["price"] == 4500
+        assert payload["levels"][0]["distance_points"] == 2
+        assert payload["levels"][1]["strength"] == 2

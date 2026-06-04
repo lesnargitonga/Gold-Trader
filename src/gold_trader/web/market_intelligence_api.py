@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.parse
+from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -184,6 +185,67 @@ def _market_summary_from_health(health: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _market_levels_payload(decision: dict[str, Any] | None = None) -> dict[str, Any]:
+    path = ROOT / "config" / "market_levels.json"
+    payload: dict[str, Any] = {
+        "state": "missing",
+        "source": "config/market_levels.json",
+        "configured": False,
+        "levels": [],
+    }
+    if not path.exists():
+        return payload
+
+    raw = read_json(path, {})
+    rows = raw.get("levels") if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+    current_price = None
+    if isinstance(decision, dict):
+        try:
+            current_price = float(decision.get("current_price"))
+        except (TypeError, ValueError):
+            current_price = None
+
+    levels: list[dict[str, Any]] = []
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                price = float(row["price"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            try:
+                strength = float(row.get("strength") or 1.0)
+            except (TypeError, ValueError):
+                strength = 1.0
+            item: dict[str, Any] = {
+                "price": price,
+                "kind": str(row.get("kind") or "level"),
+                "label": str(row.get("label") or ""),
+                "strength": strength,
+            }
+            if current_price is not None:
+                item["distance_points"] = round(price - current_price, 3)
+            levels.append(item)
+
+    if current_price is not None:
+        levels.sort(key=lambda item: abs(float(item.get("distance_points") or 0)))
+    else:
+        levels.sort(key=lambda item: float(item["price"]))
+    try:
+        updated_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).replace(microsecond=0).isoformat()
+    except OSError:
+        updated_at = None
+    return {
+        "state": "manual_proxy" if levels else "empty",
+        "source": "config/market_levels.json",
+        "configured": True,
+        "updated_at": updated_at,
+        "description": raw.get("description", "") if isinstance(raw, dict) else "",
+        "levels": levels,
+    }
+
+
 def _decision_payload(*, refresh: bool = False) -> dict[str, Any]:
     decision = get_decision_for_api(refresh=refresh)
     if not isinstance(decision, dict):
@@ -193,6 +255,7 @@ def _decision_payload(*, refresh: bool = False) -> dict[str, Any]:
         decision = dict(decision)
         decision["provider_health_summary"] = health
         decision["market_intelligence_summary"] = _market_summary_from_health(health)
+        decision["market_levels_summary"] = _market_levels_payload(decision)
     except Exception:
         pass
     return decision
@@ -225,6 +288,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.json({"ok": True, **data} if path == "/api/health" else data)
         if path == "/api/market-intelligence":
             return self.json(_decision_payload().get("market_intelligence_summary", {}))
+        if path == "/api/market-levels":
+            return self.json(_market_levels_payload(_decision_payload()))
         if path == "/api/summary":
             return self.json(_summary_payload())
         if path == "/api/candles":

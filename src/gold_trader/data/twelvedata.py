@@ -69,6 +69,12 @@ def _cache_path(repo: Path, symbol: str, interval: str) -> Path:
     return repo / "data" / "cache" / "twelvedata" / f"{safe}_{interval}.json"
 
 
+def _chart_cache_path(repo: Path, symbol: str, timeframe: str) -> Path:
+    safe = symbol.replace("/", "_").replace("=", "").lower()
+    tf = timeframe.strip().upper().replace("/", "_")
+    return repo / "data" / "cache" / "charts" / f"{safe}_{tf}.json"
+
+
 def _read_cache(path: Path, ttl_seconds: int) -> list[dict[str, Any]] | None:
     if not path.exists():
         return None
@@ -104,6 +110,44 @@ def _write_cache(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_text(
         json.dumps({"fetched_at": time.time(), "values": rows}, indent=0),
     )
+
+
+def _read_chart_cache(path: Path, ttl_seconds: int, count: int) -> dict[str, Any] | None:
+    if ttl_seconds <= 0 or not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+        if time.time() - float(payload.get("fetched_at", 0)) > ttl_seconds:
+            return None
+        rows = payload.get("candles")
+        if not isinstance(rows, list) or not rows:
+            return None
+        out = {k: v for k, v in payload.items() if k not in {"fetched_at", "candles", "count"}}
+        out["candles"] = rows[-count:]
+        out["count"] = len(out["candles"])
+        out["cache_note"] = f"Showing cached {out.get('provider', 'chart')} candles."
+        return out
+    except Exception:
+        return None
+
+
+def _write_chart_cache(path: Path, payload: dict[str, Any]) -> None:
+    candles = payload.get("candles")
+    if not isinstance(candles, list) or not candles:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = {
+        "fetched_at": time.time(),
+        "ok": True,
+        "tf": payload.get("tf"),
+        "provider": payload.get("provider"),
+        "symbol": payload.get("symbol"),
+        "candles": candles,
+        "volume_note": payload.get("volume_note"),
+        "fallback_note": payload.get("fallback_note"),
+        "primary_error": payload.get("primary_error"),
+    }
+    path.write_text(json.dumps(body, indent=0))
 
 
 def _timeframe_minutes(timeframe: str) -> int | None:
@@ -426,10 +470,15 @@ def candles_for_chart(
     tf = timeframe.strip().upper()
     count = max(1, min(int(count), 500))
     chart_ttl = int(os.environ.get("GOLD_CHART_CACHE_SECONDS", "600"))
+    root = repo or Path(__file__).resolve().parents[3]
+    chart_cache_ttl = int(os.environ.get("GOLD_CHART_FALLBACK_CACHE_SECONDS", "90"))
+    chart_cache = _chart_cache_path(root, symbol, tf)
+    cached_chart = _read_chart_cache(chart_cache, chart_cache_ttl, count)
+    if cached_chart:
+        return cached_chart
     rows, err, stale = _fetch_twelvedata_rows(
         symbol, tf, limit=count, repo=repo, cache_ttl_seconds=chart_ttl
     )
-    root = repo or Path(__file__).resolve().parents[3]
     provider = "twelvedata"
     fallback_note: str | None = None
     provider_error = err
@@ -471,6 +520,8 @@ def candles_for_chart(
         payload["primary_error"] = provider_error
     elif provider_error and not rows:
         payload["error"] = provider_error
+    if rows:
+        _write_chart_cache(chart_cache, payload)
     return payload
 
 
