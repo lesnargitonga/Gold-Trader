@@ -2,6 +2,7 @@
   "use strict";
 
   var TFs = ["D1", "H4", "H1", "M30", "M15", "M5", "M1"];
+  var candleSeq = 0;
   var state = {
     page: "trade",
     tf: "M15",
@@ -10,6 +11,7 @@
     candles: [],
     candleMeta: null,
     loadError: null,
+    chartLoading: false,
   };
 
   function $(sel) {
@@ -80,16 +82,34 @@
 
   function loadCandles(tf) {
     state.tf = tf;
+    state.chartLoading = true;
+    var seq = ++candleSeq;
     return j("/api/candles?tf=" + encodeURIComponent(tf))
       .then(function (c) {
+        if (seq !== candleSeq) return;
+        state.chartLoading = false;
         state.candles = c.candles || [];
         state.candleMeta = c;
+        if (!state.candles.length) {
+          state.candleMeta = {
+            ok: false,
+            tf: tf,
+            error: (c && c.error) || "No candles returned for " + tf,
+            count: 0,
+          };
+        }
       })
       .catch(function (e) {
+        if (seq !== candleSeq) return;
+        state.chartLoading = false;
         state.candles = [];
-        state.candleMeta = { ok: false, error: String(e) };
+        state.candleMeta = { ok: false, tf: tf, error: String(e), count: 0 };
       })
-      .then(drawSoon);
+      .then(function () {
+        if (seq !== candleSeq) return;
+        if (state.page === "trade") render();
+        drawSoon();
+      });
   }
 
   function load() {
@@ -247,7 +267,28 @@
   }
 
   function drawSoon() {
-    setTimeout(draw, 30);
+    requestAnimationFrame(function () {
+      requestAnimationFrame(draw);
+    });
+  }
+
+  function chartStatusLine() {
+    if (state.chartLoading) {
+      return "Loading " + esc(state.tf) + " candles…";
+    }
+    var meta = state.candleMeta || {};
+    if (meta.ok === false || !(state.candles && state.candles.length)) {
+      return '<span class="danger">' + esc(meta.error || "feed error") + "</span>";
+    }
+    var line =
+      esc(meta.count || state.candles.length) +
+      " candles · " +
+      esc(meta.provider || "twelvedata") +
+      " · live feed";
+    if (meta.cache_note) {
+      line += ' · <span class="amber">' + esc(meta.cache_note) + "</span>";
+    }
+    return line;
   }
 
   function chart() {
@@ -268,13 +309,7 @@
       '</div></div><div class="chartMeta">' +
       esc(state.tf) +
       " · " +
-      esc(meta.count || state.candles.length) +
-      " candles · " +
-      esc(meta.provider || "—") +
-      " · " +
-      (meta.ok === false
-        ? '<span class="danger">' + esc(meta.error || "feed error") + "</span>"
-        : "live feed") +
+      chartStatusLine() +
       " · Volume note: " +
       esc(meta.volume_note || "—") +
       '</div><canvas id="chart" width="1100" height="420"></canvas></section>'
@@ -283,7 +318,17 @@
 
   function draw() {
     var c = $("#chart");
-    if (!c || !state.candles || !state.candles.length) return;
+    if (!c || !state.candles || !state.candles.length || state.chartLoading) return;
+    var data = state.candles.filter(function (row) {
+      return (
+        Number.isFinite(Number(row.high)) &&
+        Number.isFinite(Number(row.low)) &&
+        Number.isFinite(Number(row.open)) &&
+        Number.isFinite(Number(row.close))
+      );
+    });
+    if (!data.length) return;
+    data = data.slice(-180);
     var ctx = c.getContext("2d");
     var W = c.width;
     var H = c.height;
@@ -291,7 +336,6 @@
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = "#071019";
     ctx.fillRect(0, 0, W, H);
-    var data = state.candles.slice(-180);
     var hi = Math.max.apply(
       null,
       data.map(function (x) {
@@ -526,8 +570,11 @@
     var tfBtns = root.querySelectorAll(".tfBtns button[data-tf]");
     for (var j = 0; j < tfBtns.length; j++) {
       tfBtns[j].addEventListener("click", function () {
-        loadCandles(this.getAttribute("data-tf"));
+        var tf = this.getAttribute("data-tf");
+        state.tf = tf;
+        state.chartLoading = true;
         render();
+        loadCandles(tf);
       });
     }
   }

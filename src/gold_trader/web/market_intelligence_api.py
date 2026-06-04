@@ -47,11 +47,12 @@ def _safe_json(obj: Any) -> bytes:
 
 
 def _candles(tf: str) -> dict[str, Any]:
+    from gold_trader.data.twelvedata import candles_for_chart
+
     symbol = os.getenv("GOLD_TWELVE_DATA_SYMBOL") or os.getenv("GOLD_SYMBOL", "XAU/USD")
+    count = int(os.getenv("GOLD_CHART_CANDLE_COUNT", "280"))
     try:
-        from gold_trader.data.twelvedata import fetch_candles
-        candles = fetch_candles(tf.upper(), symbol=symbol, count=int(os.getenv("GOLD_CHART_CANDLE_COUNT", "280")))
-        return {"ok": True, "tf": tf.upper(), "provider": "twelvedata", "candles": candles, "count": len(candles), "volume_note": "XAU/USD volume may be 0.0 on this feed."}
+        return candles_for_chart(tf, symbol=symbol, count=count, repo=ROOT)
     except Exception as exc:
         return {"ok": False, "tf": tf.upper(), "provider": "twelvedata", "error": str(exc), "candles": [], "count": 0}
 

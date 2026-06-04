@@ -68,8 +68,10 @@ def _cache_path(repo: Path, symbol: str, interval: str) -> Path:
 
 
 def _read_cache(path: Path, ttl_seconds: int) -> list[dict[str, Any]] | None:
-    if not path.exists() or ttl_seconds <= 0:
+    if not path.exists():
         return None
+    if ttl_seconds <= 0:
+        return _read_cache_stale(path)
     try:
         payload = json.loads(path.read_text())
         if time.time() - float(payload.get("fetched_at", 0)) > ttl_seconds:
@@ -78,6 +80,21 @@ def _read_cache(path: Path, ttl_seconds: int) -> list[dict[str, Any]] | None:
         return rows if isinstance(rows, list) else None
     except Exception:
         return None
+
+
+def _read_cache_stale(path: Path) -> list[dict[str, Any]] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+        rows = payload.get("values")
+        return rows if isinstance(rows, list) else None
+    except Exception:
+        return None
+
+
+def _api_error_message(payload: dict[str, Any]) -> str:
+    return str(payload.get("message") or payload.get("code") or "Twelve Data request failed")
 
 
 def _write_cache(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -96,20 +113,41 @@ def fetch_twelvedata_candles(
     use_cache: bool = True,
 ) -> list[dict[str, Any]]:
     """Return OHLC rows oldest-first: time, open, high, low, close, volume."""
+    rows, _err, _stale = _fetch_twelvedata_rows(
+        symbol, timeframe, limit=limit, repo=repo, use_cache=use_cache
+    )
+    return rows
+
+
+def _fetch_twelvedata_rows(
+    symbol: str,
+    timeframe: str,
+    *,
+    limit: int = 500,
+    repo: Path | None = None,
+    use_cache: bool = True,
+    cache_ttl_seconds: int | None = None,
+) -> tuple[list[dict[str, Any]], str | None, bool]:
+    """Return (rows, error, served_from_stale_cache)."""
     apikey = _resolve_key()
     if not apikey:
-        return []
+        return [], "Twelve Data API key not configured", False
     interval = interval_for_timeframe(timeframe)
     if not interval:
-        return []
+        return [], f"unsupported timeframe {timeframe}", False
     td_symbol = normalize_twelve_data_symbol(symbol)
     root = repo or Path(__file__).resolve().parents[3]
-    ttl = int(os.environ.get("GOLD_TWELVE_DATA_CACHE_SECONDS", "120"))
+    ttl = cache_ttl_seconds if cache_ttl_seconds is not None else int(
+        os.environ.get("GOLD_TWELVE_DATA_CACHE_SECONDS", "120")
+    )
     cache = _cache_path(root, td_symbol, interval)
+
     if use_cache:
         cached = _read_cache(cache, ttl)
         if cached:
-            return _normalize_rows(cached)[-limit:]
+            rows = _normalize_rows(cached)[-limit:]
+            if rows:
+                return rows, None, False
 
     params = {
         "symbol": td_symbol,
@@ -120,24 +158,76 @@ def fetch_twelvedata_candles(
         "apikey": apikey,
     }
     url = f"{API_BASE}?{urllib.parse.urlencode(params)}"
-    try:
-        with urllib.request.urlopen(url, timeout=20) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
-        return []
+    last_error: str | None = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(url, timeout=25) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+            last_error = str(exc)
+            payload = None
 
-    if not isinstance(payload, dict):
-        return []
-    status = str(payload.get("status") or "").lower()
-    if status and status not in ("ok", "success"):
-        return []
-    values = payload.get("values")
-    if not isinstance(values, list):
-        return []
-    rows = _normalize_rows(values)
-    if rows and use_cache:
-        _write_cache(cache, values)
-    return rows[-limit:]
+        if not isinstance(payload, dict):
+            if attempt == 0:
+                time.sleep(1.0)
+                continue
+            break
+
+        status = str(payload.get("status") or "").lower()
+        if status and status not in ("ok", "success"):
+            last_error = _api_error_message(payload)
+            if attempt == 0 and any(x in last_error.lower() for x in ("credit", "limit", "rate", "minute")):
+                time.sleep(1.2)
+                continue
+            break
+
+        values = payload.get("values")
+        if not isinstance(values, list):
+            last_error = "Twelve Data response missing candle values"
+            break
+        rows = _normalize_rows(values)
+        if rows and use_cache:
+            _write_cache(cache, values)
+        if rows:
+            return rows[-limit:], None, False
+        last_error = "Twelve Data returned no usable candles"
+        break
+
+    stale = _read_cache_stale(cache) if use_cache else None
+    if stale:
+        rows = _normalize_rows(stale)[-limit:]
+        if rows:
+            return rows, None, True
+    return [], last_error or "Unable to load candles", False
+
+
+def candles_for_chart(
+    timeframe: str,
+    *,
+    symbol: str = "XAUUSD",
+    count: int = 280,
+    repo: Path | None = None,
+) -> dict[str, Any]:
+    """Payload for /api/candles — never reports ok when count is zero."""
+    tf = timeframe.strip().upper()
+    count = max(20, min(int(count), 500))
+    chart_ttl = int(os.environ.get("GOLD_CHART_CACHE_SECONDS", "600"))
+    rows, err, stale = _fetch_twelvedata_rows(
+        symbol, tf, limit=count, repo=repo, cache_ttl_seconds=chart_ttl
+    )
+    payload: dict[str, Any] = {
+        "ok": bool(rows),
+        "tf": tf,
+        "provider": "twelvedata",
+        "candles": rows,
+        "count": len(rows),
+        "volume_note": "XAU/USD volume may be 0.0 on this feed.",
+    }
+    if stale:
+        payload["cache_note"] = "Showing cached candles (live feed was rate-limited or unavailable)."
+    if err and not rows:
+        payload["error"] = err
+    return payload
 
 
 def _normalize_rows(values: list[Any]) -> list[dict[str, Any]]:
