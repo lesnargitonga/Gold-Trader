@@ -12,7 +12,9 @@ monitoring, research, and operator controls. Cron drives the loop.
 > full-stack pipeline, grade/family verdict, live scout rules.
 >
 > **IFVG operator guide:** [docs/IFVG_CONFLUENCE_ASSISTANT.md](docs/IFVG_CONFLUENCE_ASSISTANT.md) ·
-> **Execution geometry:** [docs/IFVG_EXECUTION_GEOMETRY_AUDIT.md](docs/IFVG_EXECUTION_GEOMETRY_AUDIT.md)
+> **Execution geometry:** [docs/IFVG_EXECUTION_GEOMETRY_AUDIT.md](docs/IFVG_EXECUTION_GEOMETRY_AUDIT.md) ·
+> **HTF IFVG reset:** [docs/HTF_IFVG_RESET.md](docs/HTF_IFVG_RESET.md) ·
+> **Full-system IFVG:** [docs/FULL_SYSTEM_IFVG.md](docs/FULL_SYSTEM_IFVG.md)
 
 ---
 

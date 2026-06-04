@@ -1385,11 +1385,14 @@ The Trade screen shows IFVG levels as **colour-coded horizontal bands**
 IFVG, target and risk shading, plus options/CME strike lines from web research.
 
 **Automatic AI scout** (`scripts/ifvg_auto_scout.py`, started by `./start`):
-scans live bars every ~60s on the chart timeframe you select (default M15),
-runs IFVG + OpenAI research, accumulates **model-facing alerts** in
-`logs/ifvg_scout_state.json` so each research call knows what to watch, when,
-and where. Your job is only **Enter trade** when the approval brief shows all
-gates passed — the UI explains why.
+every ~60s runs the **full-system IFVG engine** (`scripts/ifvg_full_system_engine.py`)
+then the legacy IFVG + OpenAI scan on your chart timeframe (default M15).
+Outputs: `logs/ifvg_mtf_decision_state.json`, `logs/ifvg_mtf_operator_brief.md`,
+`logs/operator_alerts.jsonl` (optional webhook/Telegram via env). Scout alerts remain in
+`logs/ifvg_scout_state.json`. Policy: `config/execution_policy.json`
+(see `config/execution_policy.json.example`). Specs:
+[FULL_SYSTEM_IFVG.md](FULL_SYSTEM_IFVG.md) · [HTF_IFVG_RESET.md](HTF_IFVG_RESET.md).
+Your job is only **Enter trade** when the approval brief shows all gates passed — the UI explains why.
 
 **Live scout gates (Apr–May 2026 audit — see [AUDIT_RESULTS.md](AUDIT_RESULTS.md)):**
 Grade **A only** · **`mixed bearish bias`** · **`macro_regime=mixed`** (hard block
