@@ -59,7 +59,20 @@ def main() -> None:
         }
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
+    # Write legacy market_health.json
     OUT.write_text(json.dumps(health, indent=2), encoding="utf-8")
+    # Write normalized market_context_health.json
+    ctx_path = OUT.parent / "market_context_health.json"
+    ctx = {
+        "state": "clear" if health.get("spread_points") is not None else "unknown",
+        "source": "mt5_bridge_last_tick",
+        "updated_at": health.get("updated_at"),
+        "fresh": True if health.get("bridge_status") == "online" else False,
+        "spread_points": health.get("spread_points"),
+        "spread_source": health.get("spread_source"),
+        "details": health,
+    }
+    ctx_path.write_text(json.dumps(ctx, indent=2), encoding="utf-8")
     print(json.dumps(health, indent=2))
 
 if __name__ == "__main__":

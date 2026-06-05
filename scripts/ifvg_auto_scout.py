@@ -15,8 +15,14 @@ from gold_trader.assistants.ifvg_scout import DEFAULT_SCAN_SECONDS, read_scout_t
 POLL_SECONDS = int(os.environ.get("IFVG_SCOUT_INTERVAL", str(DEFAULT_SCAN_SECONDS)))
 RESEARCH_EVERY_N = max(1, int(os.environ.get("IFVG_SCOUT_RESEARCH_EVERY", "3")))
 FULL_ENGINE = REPO / "scripts" / "ifvg_full_system_engine.py"
+UPDATER = REPO / "scripts" / "update_live_inputs.py"
 
 def run_full_engine() -> None:
+    # Run live-input updaters first (do not abort scout if they fail)
+    try:
+        subprocess.run([sys.executable, str(UPDATER)], cwd=str(REPO), check=False)
+    except Exception as exc:
+        scout_log(f"live inputs updater error: {exc!r}", level="WARNING")
     subprocess.run([sys.executable, str(FULL_ENGINE)], cwd=str(REPO), check=True)
 
 def main() -> int:

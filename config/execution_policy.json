@@ -1,29 +1,35 @@
 {
-  "symbol": "XAUUSD",
+  "symbol": "GOLD",
   "max_trades_per_day": 3,
   "max_open_positions": 1,
   "stop_after_daily_losses": 2,
-  "minimum_final_score": 82,
+  "minimum_final_score": 35,
   "minimum_rr_to_tp1": 1.0,
   "minimum_rr_to_tp2": 1.8,
   "timeframes": {
     "higher_timeframe_bias": ["D1", "H4", "H1"],
     "confirmation": ["M30", "M15"],
-    "entry_timing": ["M5", "M1"],
+    "entry_timing": ["M30", "M15", "M5", "M1"],
     "all": ["D1", "H4", "H1", "M30", "M15", "M5", "M1"]
   },
   "confirmation_rules": {
-    "minimum_aligned_timeframes": 5,
-    "block_if_d1_and_h4_conflict": true
+    "minimum_aligned_timeframes": 2,
+    "block_if_d1_and_h4_conflict": false,
+    "require_ifvg_confirm": false,
+    "require_entry_ifvg": false,
+    "require_aligned_sweep": false
   },
   "market_filters": {
-    "max_spread_points": 55,
-    "allowed_sessions_utc": ["london", "new_york", "london_new_york_overlap"],
+    "max_spread_points": 60,
+    "allowed_sessions_utc": ["london", "new_york", "london_new_york_overlap", "asia"],
     "block_high_impact_macro_minutes_before": 45,
     "block_high_impact_macro_minutes_after": 30,
-    "minimum_sentiment_abs_score": 0.15,
-    "block_if_sentiment_conflicts": true,
-    "block_if_context_unavailable": false
+    "minimum_sentiment_abs_score": 0.1,
+    "block_if_sentiment_conflicts": false,
+    "block_if_context_unavailable": false,
+    "require_live_spread_for_trade": true,
+    "require_fresh_macro_for_live": true,
+    "require_fresh_sentiment_for_live": true
   },
   "journal": {
     "paths": ["logs/trade_journal.csv", "data/paper/trades.csv", "data/live/trades.csv"]

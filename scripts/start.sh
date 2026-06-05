@@ -142,7 +142,9 @@ elif [[ -n "$existing_scout" ]] && kill -0 "$existing_scout" 2>/dev/null; then
     echo "$existing_scout" > "$SCOUT_PID_FILE"
     log "IFVG scout already running (pid=$existing_scout)"
 else
+    # Run live input updaters once before starting the scout so normalized files exist
     cd "$ROOT"
+    "$VENV" "$ROOT/scripts/update_live_inputs.py" >> "$LOG_DIR/update_live_inputs.log" 2>&1 || warn "update_live_inputs failed — check $LOG_DIR/update_live_inputs.log"
     nohup env PYTHONPATH=src \
         GOLD_BRIDGE_URL="$BRIDGE_URL" \
         GOLD_BRIDGE_SECRET="${GOLD_BRIDGE_SECRET:-}" \

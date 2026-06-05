@@ -123,7 +123,10 @@ def load_policy() -> dict[str, Any]:
             "block_high_impact_macro_minutes_after": 30,
             "minimum_sentiment_abs_score": 0.15,
             "block_if_sentiment_conflicts": True,
-            "block_if_context_unavailable": False
+            "block_if_context_unavailable": False,
+            "require_live_spread_for_trade": True,
+            "require_fresh_macro_for_live": True,
+            "require_fresh_sentiment_for_live": True
         },
         "journal": {
             "paths": ["logs/trade_journal.csv", "data/paper/trades.csv", "data/live/trades.csv"]
@@ -309,6 +312,18 @@ def latest_tick(symbol: str) -> dict[str, Any]:
     return {}
 
 def read_spread_points(symbol: str) -> tuple[float | None, str | None]:
+    # Prefer normalized market context health file written by updater
+    norm = REPO / "logs" / "market_context_health.json"
+    if norm.exists():
+        data = load_json(norm, {})
+        sp = data.get("spread_points")
+        if sp is not None:
+            src = "normalized market_context_health.json"
+            if data.get("fresh"):
+                return float(sp), f"live normalized {src}"
+            return float(sp), f"stale normalized {src}"
+
+    # Fall back to live bridge tick if available
     tick = latest_tick(symbol)
     bid = tick.get("bid"); ask = tick.get("ask")
     if bid is not None and ask is not None:
@@ -317,11 +332,11 @@ def read_spread_points(symbol: str) -> tuple[float | None, str | None]:
     for key in ("spread_points", "spread", "spread_float"):
         if key in tick:
             return float(tick[key]), f"live tick {key}"
+
+    # Legacy cached market_health.json fallback
     cache = REPO / "logs" / "market_health.json"
     data = load_json(cache, {})
     if data.get("spread_points") is not None:
-        # If the cached health was written by the bridge updater and marks the
-        # spread as originating from a live tick, treat it as live for gating.
         spread_src = str(data.get("spread_source") or "").lower()
         if "live" in spread_src or spread_src == "mt5_bridge_last_tick":
             return float(data["spread_points"]), "live cached market_health.json"
@@ -484,10 +499,26 @@ def build_market_context(symbol: str, policy: dict[str, Any], reads: list[Timefr
     ctx.blockers.extend(macro_blockers); ctx.notes.extend(macro_notes)
     if ctx.macro_state == "unknown" and mf.get("block_if_context_unavailable"):
         ctx.blockers.append("macro calendar unavailable")
+    # Enforce fresh normalized macro file for live trade authority
+    macro_norm = REPO / "data" / "macro" / "economic_calendar.json"
+    if macro_norm.exists():
+        md = load_json(macro_norm, {})
+        if not md.get("fresh", False) and mf.get("require_fresh_macro_for_live", True):
+            ctx.blockers.append("macro state stale/unavailable; live trade not allowed")
+        elif not md.get("fresh", False):
+            ctx.warnings.append("macro state stale/unavailable; paper only")
     score, sent_state, sent_notes = load_sentiment_state(policy)
     ctx.sentiment_score = score; ctx.sentiment_state = sent_state; ctx.notes.extend(sent_notes)
     if score is None and mf.get("block_if_context_unavailable"):
         ctx.blockers.append("sentiment unavailable")
+    # Enforce fresh normalized sentiment file for live trade authority
+    sent_norm = REPO / "logs" / "sentiment_state.json"
+    if sent_norm.exists():
+        sd = load_json(sent_norm, {})
+        if not sd.get("fresh", False) and mf.get("require_fresh_sentiment_for_live", True):
+            ctx.blockers.append("sentiment state stale/unavailable; live trade not allowed")
+        elif not sd.get("fresh", False):
+            ctx.warnings.append("sentiment state stale/unavailable; paper only")
     if mf.get("block_if_sentiment_conflicts") and side in {"buy", "sell"} and sent_state in {"bullish", "bearish"}:
         if side == "buy" and sent_state == "bearish":
             ctx.blockers.append("sentiment conflicts with buy side")
