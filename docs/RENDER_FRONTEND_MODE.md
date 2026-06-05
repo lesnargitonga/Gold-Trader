@@ -1,5 +1,7 @@
 # Render Frontend Mode
 
+Current system truth is defined in `docs/SYSTEM_TRUTH.md`. If this file conflicts with it, `docs/SYSTEM_TRUTH.md` wins.
+
 Gold Trader uses Render as the official remote dashboard and keeps the local PC as the authoritative trading and data engine.
 
 ## Active Render Path

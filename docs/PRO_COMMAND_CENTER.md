@@ -1,5 +1,8 @@
 # Gold Trader Professional Command Center
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This package replaces the current React command center with a more complete professional cockpit served by Python.
 
 ## Features

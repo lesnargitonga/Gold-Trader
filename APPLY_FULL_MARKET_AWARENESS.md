@@ -1,5 +1,8 @@
 # Apply Full Market Awareness Patch
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 ```bash
 cd ~/Gold-Trader
 unzip ~/Downloads/gold_trader_full_market_awareness.zip -d /tmp/ag_context

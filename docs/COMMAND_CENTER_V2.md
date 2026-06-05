@@ -1,5 +1,8 @@
 # Gold Trader Command Center v2
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 Professional React-powered cockpit served by Python, designed around the existing Gold Trader backend.
 
 ## Correct data paths

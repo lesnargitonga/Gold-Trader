@@ -1,5 +1,8 @@
 # Gold Trader — System Hardening v2
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This patch fixes the missing market-awareness pipeline issues that made the UI look better while the engine still had blind spots.
 
 ## What it adds

@@ -1,5 +1,8 @@
 # React Command Center
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This patch replaces the long server-rendered command page with a React cockpit served by the existing Python service.
 
 ## What it adds

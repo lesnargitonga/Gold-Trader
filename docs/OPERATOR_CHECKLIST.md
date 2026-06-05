@@ -1,14 +1,17 @@
 # Gold Trader Local Operator Checklist
 
+Current system truth is defined in `docs/SYSTEM_TRUTH.md`. If this file conflicts with it, `docs/SYSTEM_TRUTH.md` wins.
+
 ## Decision now
 Use this mode for the next stable build:
 
 ```
 PC = authoritative trading engine
-Render = dashboard mirror / fallback only
+Render = official remote dashboard mirror
+Live orders = locked
 ```
 
-Do not make Render the full trading brain yet. First make the local system perfect, then mirror its state online.
+Do not make Render the trading brain. Render must show synced local state, cloud fallback/missing, or stale sync warnings honestly.
 
 ---
 
@@ -161,15 +164,27 @@ If stale (older than policy threshold), mark stale and block live readiness.
 
 ## Patch priority 3 — one UI, one runner
 
-Keep one official command center and one official runner:
+Keep the official local UI, the official Render dashboard, and the official local runner:
 
 ```
-src/gold_trader/web/gold_trader_app.py
+src/gold_trader/web/server.py
+src/gold_trader/web/static/index.html
+src/gold_trader/web/static/app.js
+src/gold_trader/web/market_intelligence_api.py
+frontend/market_intelligence/command_center.js
 scripts/start.sh
 scripts/ifvg_full_system_engine.py
 ```
 
 All other UI entrypoints and runners become secondary/deprecated.
+
+Render sync is handled by:
+
+```
+scripts/publish_state_to_render_payload.py
+scripts/publish_state_to_render.py
+POST /api/ingest-state
+```
 
 ---
 
@@ -199,4 +214,11 @@ That will reveal the local blockers and what to fix next.
 
 ---
 
-If you want, I can commit this checklist to the repo, implement the three priority patches fully, and re-run the full-stack tests. Tell me which you'd like me to do first.
+Current authoritative docs:
+
+```
+docs/SYSTEM_TRUTH.md
+docs/RENDER_FRONTEND_MODE.md
+docs/FINAL_LOCAL_OPERATION.md
+docs/PAPER_JOURNAL_AND_PERFORMANCE.md
+```

@@ -1,5 +1,8 @@
 # Market Intelligence UX Hardening
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This layer makes the command center more honest and operator-friendly.
 
 ## Adds to decision JSON

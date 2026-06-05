@@ -1,5 +1,8 @@
 # Gold Trader — Live Pipeline Polish v4
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This patch addresses the remaining rough edges after v3:
 
 - M1 may remain 0 because Twelve Data/free-plan 1min pulls can fail with large output size.

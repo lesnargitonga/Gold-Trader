@@ -1,9 +1,9 @@
 # Gold Trader — Handbook
 
-**Single source of truth.** This document supersedes the previous
-`README.md` long-form, `docs/system_status.md`, `docs/research_plan.md`,
-`docs/runbook_mt5.md`, and `docs/evaluation.md`. All operational, research,
-runbook and empirical detail lives here.
+**Reference handbook.** Current operating truth is defined in
+`docs/SYSTEM_TRUTH.md`. This handbook remains useful for architecture,
+research history, runbooks, and empirical detail, but `docs/SYSTEM_TRUTH.md`
+wins if there is any conflict.
 
 _Last updated: 2026-05-30_
 

@@ -1,5 +1,8 @@
 # React Command Center v3
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This patch replaces the fragile React command center entry with a robust, no-build React cockpit served by Python.
 
 It fixes:

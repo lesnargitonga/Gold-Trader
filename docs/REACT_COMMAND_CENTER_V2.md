@@ -1,5 +1,8 @@
 # React Command Center v2
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This patch replaces the earlier React command center with a tighter, data-safe frontend and a more robust Python API server.
 
 ## Frontend build

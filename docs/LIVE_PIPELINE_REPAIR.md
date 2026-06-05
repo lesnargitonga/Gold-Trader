@@ -1,5 +1,8 @@
 # Gold Trader — Live Pipeline Repair
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This patch fixes the remaining live-state problems visible on Render:
 
 - `/api/provider-health` said Twelve Data was unknown even though candles were loading.

@@ -1,5 +1,8 @@
 # Absolute Gold — Full Market Awareness Layer
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This patch adds the cloud context layer that fills the remaining gaps around the IFVG engine.
 
 ## Providers

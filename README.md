@@ -1,33 +1,19 @@
 # Gold Trader
 
-Autonomous XAUUSD research + live trading agent. Pure-stdlib Python on
-Linux. Live execution via MT5-under-Wine bridge. Web UI for live
-monitoring, research, and operator controls. Cron drives the loop.
+Autonomous XAUUSD research and supervised paper-trading system. The local PC is the
+authoritative trading/data engine. Render is the official remote dashboard that
+mirrors synced local state. Live orders remain locked.
 
-> **Single source of truth: [docs/HANDBOOK.md](docs/HANDBOOK.md)** —
-> architecture, strategy library, MT5 runbook, research methodology,
-> empirical results, roadmap, troubleshooting.
+> **Current system truth:** [docs/SYSTEM_TRUTH.md](docs/SYSTEM_TRUTH.md)
 >
-> **Latest audit (Apr 29 – May 29 2026):** [docs/AUDIT_RESULTS.md](docs/AUDIT_RESULTS.md) —
-> full-stack pipeline, grade/family verdict, live scout rules.
+> **Render dashboard mode:** [docs/RENDER_FRONTEND_MODE.md](docs/RENDER_FRONTEND_MODE.md)
 >
-> **IFVG operator guide:** [docs/IFVG_CONFLUENCE_ASSISTANT.md](docs/IFVG_CONFLUENCE_ASSISTANT.md) ·
-> **Execution geometry:** [docs/IFVG_EXECUTION_GEOMETRY_AUDIT.md](docs/IFVG_EXECUTION_GEOMETRY_AUDIT.md) ·
-> **HTF IFVG reset:** [docs/HTF_IFVG_RESET.md](docs/HTF_IFVG_RESET.md) ·
-> **Full-system IFVG:** [docs/FULL_SYSTEM_IFVG.md](docs/FULL_SYSTEM_IFVG.md) ·
-> **Command center (Render):** [docs/ABSOLUTE_GOLD_COMMAND_CENTER.md](docs/ABSOLUTE_GOLD_COMMAND_CENTER.md) ·
-> **Multi-page app:** [docs/ABSOLUTE_GOLD_APP.md](docs/ABSOLUTE_GOLD_APP.md) ·
-> **Full market awareness:** [docs/FULL_MARKET_AWARENESS.md](docs/FULL_MARKET_AWARENESS.md) ·
-> **React command center:** [docs/REACT_COMMAND_CENTER.md](docs/REACT_COMMAND_CENTER.md) ·
-> **React v2 (polished UI):** [docs/REACT_COMMAND_CENTER_V2.md](docs/REACT_COMMAND_CENTER_V2.md) ·
-> **React v3 (live data binding):** [docs/REACT_COMMAND_CENTER_V3.md](docs/REACT_COMMAND_CENTER_V3.md) ·
-> **Pro command center:** [docs/PRO_COMMAND_CENTER.md](docs/PRO_COMMAND_CENTER.md) ·
-> **Command center v2 (market cockpit):** [docs/COMMAND_CENTER_V2.md](docs/COMMAND_CENTER_V2.md) ·
-> **System hardening v2:** [docs/SYSTEM_HARDENING_V2.md](docs/SYSTEM_HARDENING_V2.md) ·
-> **Market intelligence UX (Render):** [docs/MARKET_INTELLIGENCE_UX.md](docs/MARKET_INTELLIGENCE_UX.md) ·
-> **Live pipeline repair:** [docs/LIVE_PIPELINE_REPAIR.md](docs/LIVE_PIPELINE_REPAIR.md) ·
-> **Live pipeline repair v3:** [docs/LIVE_PIPELINE_REPAIR_V3.md](docs/LIVE_PIPELINE_REPAIR_V3.md) ·
-> **Live pipeline polish v4:** [docs/LIVE_PIPELINE_POLISH_V4.md](docs/LIVE_PIPELINE_POLISH_V4.md)
+> **Local operation:** [docs/FINAL_LOCAL_OPERATION.md](docs/FINAL_LOCAL_OPERATION.md)
+>
+> **Paper evidence:** [docs/PAPER_JOURNAL_AND_PERFORMANCE.md](docs/PAPER_JOURNAL_AND_PERFORMANCE.md)
+>
+> Older APPLY docs and old Command Center variants are historical implementation notes.
+> They are not current operating instructions unless `docs/SYSTEM_TRUTH.md` links to them.
 
 ---
 
@@ -87,4 +73,4 @@ PYTHONPATH=src .venv/bin/python -m pytest -q
 
 ---
 
-For everything else, see [docs/HANDBOOK.md](docs/HANDBOOK.md).
+For current operating truth, see [docs/SYSTEM_TRUTH.md](docs/SYSTEM_TRUTH.md).

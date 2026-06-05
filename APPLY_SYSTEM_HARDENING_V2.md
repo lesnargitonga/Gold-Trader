@@ -1,5 +1,8 @@
 # Apply System Hardening v2
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 ```bash
 cd ~/Gold-Trader
 unzip ~/Downloads/gold_trader_system_hardening_v2.zip -d /tmp/gold_hardening_v2

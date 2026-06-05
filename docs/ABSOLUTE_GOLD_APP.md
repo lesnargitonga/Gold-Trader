@@ -1,5 +1,8 @@
 # Absolute Gold App
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This patch replaces the single long dashboard with a multi-page trading command center.
 
 ## Pages

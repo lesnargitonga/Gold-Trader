@@ -1,5 +1,8 @@
 # Absolute Gold Command Center
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This package is a production-grade UI overlay for the current Gold Trader backend.
 
 ## Goals

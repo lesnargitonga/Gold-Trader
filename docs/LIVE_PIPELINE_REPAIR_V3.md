@@ -1,5 +1,8 @@
 # Gold Trader — Live Pipeline Repair v3
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 This fixes the regression where the dashboard showed `candles: 0` and no current price even though `/api/candles?tf=M15` worked.
 
 ## Root cause

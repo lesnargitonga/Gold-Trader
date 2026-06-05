@@ -1,5 +1,8 @@
 # Apply Absolute Gold Command Center
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 From repo root:
 
 ```bash

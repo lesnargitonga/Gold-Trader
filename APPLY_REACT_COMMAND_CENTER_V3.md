@@ -1,5 +1,8 @@
 # Apply React Command Center v3
 
+> **Historical note:** This file records an older implementation step. Current operating truth is `docs/SYSTEM_TRUTH.md`; do not use this as current run or deploy guidance.
+
+
 ```bash
 cd ~/Gold-Trader
 unzip ~/Downloads/gold_trader_react_command_center_v3.zip -d /tmp/react_cc_v3
