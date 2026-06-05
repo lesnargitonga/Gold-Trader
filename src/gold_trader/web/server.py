@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .runtime_config import RuntimeConfig, load_runtime_config, save_runtime_config
 from ..infra.secrets import resolve_bridge_secret, save_secrets, secrets_status
+from ..core.market_intelligence_ux import get_decision_for_api
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -1886,6 +1887,19 @@ def _api_paper_signals(query: dict[str, list[str]]) -> dict[str, Any]:
     return {"rows": rows, "count": len(rows)}
 
 
+def _api_decision(query: dict[str, list[str]]) -> dict[str, Any]:
+    """Return the current decision for the UI. Supports `?refresh=true`."""
+    try:
+        refresh_val = (query.get("refresh") or ["false"])[0]
+        refresh = str(refresh_val).lower() in ("1", "true", "yes")
+    except Exception:
+        refresh = False
+    try:
+        return get_decision_for_api(refresh=refresh)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 def _api_decision_journal(query: dict[str, list[str]]) -> dict[str, Any]:
     limit = int((query.get("limit") or ["50"])[0])
     p = LOGS_DIR / "decision_journal.jsonl"
@@ -2043,6 +2057,9 @@ class GoldTraderHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/paper-signals":
                 self._send_json(_api_paper_signals(query))
+                return
+            if path == "/api/decision":
+                self._send_json(_api_decision(query))
                 return
             if path in ("/api/decision-journal", "/api/decision_journal"):
                 self._send_json(_api_decision_journal(query))
