@@ -89,12 +89,17 @@ run_decision_refresh_once() {
         "$ROOT/scripts/journal_decision_snapshot.py"
         "$ROOT/scripts/update_paper_signal_outcomes.py"
         "$ROOT/scripts/report_paper_performance.py"
+        "$ROOT/scripts/publish_state_to_render_payload.py"
     )
     local step_path
     for step_path in "${steps[@]}"; do
         PYTHONPATH=src "$VENV" "$step_path" >> "$LOG_DIR/start_decision_refresh.log" 2>&1 \
             || warn "$(basename "$step_path") failed — check logs/start_decision_refresh.log"
     done
+    if [[ -n "${GOLD_RENDER_INGEST_URL:-}" && -n "${GOLD_CLOUD_SYNC_TOKEN:-}" ]]; then
+        PYTHONPATH=src "$VENV" "$ROOT/scripts/publish_state_to_render.py" >> "$LOG_DIR/start_decision_refresh.log" 2>&1 \
+            || warn "publish_state_to_render.py failed — check logs/start_decision_refresh.log"
+    fi
 }
 
 launch_bridge() {
@@ -166,6 +171,8 @@ else
         GOLD_SYMBOL="${GOLD_SYMBOL:-GOLD}" \
         IFVG_SCOUT_INTERVAL="${IFVG_SCOUT_INTERVAL:-60}" \
         IFVG_SCOUT_TF="${IFVG_SCOUT_TF:-15}" \
+        GOLD_RENDER_INGEST_URL="${GOLD_RENDER_INGEST_URL:-}" \
+        GOLD_CLOUD_SYNC_TOKEN="${GOLD_CLOUD_SYNC_TOKEN:-}" \
         "$VENV" "$ROOT/scripts/ifvg_auto_scout.py" \
         >> "$SCOUT_STDOUT_LOG" 2>&1 &
     echo $! > "$SCOUT_PID_FILE"

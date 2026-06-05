@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -17,6 +18,8 @@ DEFAULT_URL = "https://gold-trader-kmaw.onrender.com/api/ingest-state"
 def main() -> int:
     ingest_url = os.getenv("GOLD_RENDER_INGEST_URL", DEFAULT_URL).strip()
     token = os.getenv("GOLD_CLOUD_SYNC_TOKEN", "").strip()
+    timeout = max(5, int(os.getenv("GOLD_RENDER_PUBLISH_TIMEOUT", "45")))
+    retries = max(1, int(os.getenv("GOLD_RENDER_PUBLISH_RETRIES", "3")))
     if not ingest_url:
         print("GOLD_RENDER_INGEST_URL is empty", file=sys.stderr)
         return 2
@@ -28,28 +31,41 @@ def main() -> int:
         return 2
 
     body = PAYLOAD.read_bytes()
-    req = urllib.request.Request(
-        ingest_url,
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "X-Gold-Sync-Token": token,
-            "User-Agent": "GoldTraderLocalPublisher/1.0",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            text = resp.read().decode("utf-8", errors="replace")
-            print(json.dumps({"ok": True, "status": resp.getcode(), "response": text[:1000]}, indent=2))
-            return 0 if 200 <= resp.getcode() < 300 else 1
-    except urllib.error.HTTPError as exc:
-        text = exc.read().decode("utf-8", errors="replace")
-        print(json.dumps({"ok": False, "status": exc.code, "response": text[:1000]}, indent=2), file=sys.stderr)
-        return 1
-    except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
-        return 1
+    last_error: dict[str, object] = {}
+    for attempt in range(1, retries + 1):
+        req = urllib.request.Request(
+            ingest_url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Gold-Sync-Token": token,
+                "User-Agent": "GoldTraderLocalPublisher/1.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+                print(json.dumps({
+                    "ok": True,
+                    "status": resp.getcode(),
+                    "attempt": attempt,
+                    "response": text[:1000],
+                }, indent=2))
+                return 0 if 200 <= resp.getcode() < 300 else 1
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode("utf-8", errors="replace")
+            last_error = {"ok": False, "status": exc.code, "attempt": attempt, "response": text[:1000]}
+            if 400 <= exc.code < 500:
+                print(json.dumps(last_error, indent=2), file=sys.stderr)
+                return 1
+        except Exception as exc:
+            last_error = {"ok": False, "attempt": attempt, "error": str(exc)}
+        if attempt < retries:
+            time.sleep(min(2 * attempt, 8))
+
+    print(json.dumps(last_error or {"ok": False, "error": "publish failed"}, indent=2), file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":
