@@ -618,15 +618,106 @@ def _paper_allowed_from_decision(decision: dict[str, Any]) -> bool:
 
 
 def _normalize_render_decision(decision: dict[str, Any], meta: dict[str, Any], *, synced: bool) -> dict[str, Any]:
+    # Start with a shallow copy of the decision
     out = dict(decision)
+
+    # Canonical source and sync metadata
     out["source"] = "local_authoritative_engine"
     out["cloud_sync"] = "fresh"
     out["cloud_state_age_seconds"] = meta.get("age_seconds")
-    out["live_allowed"] = False
-    out["live_orders_enabled"] = False
+
+    # Ensure basic execution flags
+    out["live_allowed"] = bool(out.get("live_allowed", False))
+    out["live_orders_enabled"] = bool(out.get("live_orders_enabled", False))
     if out.get("paper_allowed") is None:
         out["paper_allowed"] = _paper_allowed_from_decision(out)
 
+    # Normalize symbol mappings (display and canonical)
+    sym = str(out.get("symbol") or "").strip()
+    if sym.upper() in {"GOLD", "XAU"}:
+        # Normalize legacy short symbol names to canonical trading symbol
+        out["symbol"] = "XAUUSD"
+        out["symbol_display"] = "XAU/USD"
+    else:
+        out.setdefault("symbol", os.getenv("GOLD_SYMBOL", "XAUUSD"))
+        out.setdefault("symbol_display", out.get("symbol").replace("XAUUSD", "XAU/USD"))
+
+    # Ensure lists exist
+    out.setdefault("reasons", out.get("reasons") or [])
+    out.setdefault("blockers", out.get("blockers") or [])
+    out.setdefault("watching_for", out.get("watching_for") or [])
+
+    # Provider health summary (cloud/provider health)
+    try:
+        provider_health = _provider_health_payload(out)
+    except Exception:
+        provider_health = {}
+    out["provider_health_summary"] = provider_health
+
+    # Market intelligence summary derived from provider health
+    try:
+        out["market_intelligence_summary"] = _market_summary_from_health(provider_health)
+    except Exception:
+        out["market_intelligence_summary"] = {}
+
+    # Smart-money / timeframe summaries
+    try:
+        out["smart_money_summary"] = _smart_money_payload(out)
+    except Exception:
+        out["smart_money_summary"] = {}
+
+    # Data readiness summary
+    try:
+        out["data_readiness_summary"] = _data_readiness_payload(out, provider_health)
+    except Exception:
+        out["data_readiness_summary"] = {}
+
+    # Market levels summary
+    try:
+        out["market_levels_summary"] = _market_levels_payload(out)
+    except Exception:
+        out["market_levels_summary"] = {}
+
+    # Build tf_align mapping from timeframe_reads for the frontend
+    tf_align: dict[str, Any] = {}
+    reads = out.get("timeframe_reads") or []
+    for row in reads if isinstance(reads, list) else []:
+        if not isinstance(row, dict):
+            continue
+        tf = str(row.get("timeframe") or row.get("tf") or "").upper()
+        if not tf:
+            continue
+        candles = int(float(row.get("candles") or 0))
+        score = int(float(row.get("score") or 0))
+        aligned = bool(row.get("aligned") or (score >= 50))
+        tf_align[tf] = {
+            "aligned": aligned,
+            "bias": row.get("bias") or "unknown",
+            "ifvg_side": row.get("ifvg_side") or "none",
+            "score": score,
+            "candles": candles,
+            "data_state": row.get("data_state") or ("available" if candles > 0 else "unavailable"),
+        }
+    out["tf_align"] = tf_align
+
+    # Ensure data_health is present and prefers explicit fields
+    dh = out.get("data_health") if isinstance(out.get("data_health"), dict) else {}
+    mc = out.get("market_context") if isinstance(out.get("market_context"), dict) else {}
+    dh.setdefault("spread", mc.get("spread_source") or mc.get("spread") or dh.get("spread") or "unknown")
+    dh.setdefault("macro", mc.get("macro_state") or dh.get("macro") or "unknown")
+    dh.setdefault("sentiment", mc.get("sentiment_state") or dh.get("sentiment") or "unknown")
+    out["data_health"] = dh
+
+    # Source age status for the frontend (age_seconds, label, severity)
+    age_sec = meta.get("age_seconds")
+    severity = "ok" if (age_sec is not None and age_sec <= CLOUD_STATE_MAX_AGE_SECONDS) else "warning"
+    out["source_age_status"] = {
+        "age_seconds": age_sec,
+        "label": age_sec if age_sec is not None else "—",
+        "severity": severity,
+    }
+
+    # Ensure cloud_status has safe defaults
     current_cloud_status = out.get("cloud_status") if isinstance(out.get("cloud_status"), dict) else {}
     cloud_status = dict(current_cloud_status)
     cloud_status.setdefault("source", "local_authoritative_engine")
@@ -638,6 +729,7 @@ def _normalize_render_decision(decision: dict[str, Any], meta: dict[str, Any], *
     cloud_status["cloud_sync"] = "fresh"
     cloud_status["cloud_sync_age_seconds"] = meta.get("age_seconds")
     out["cloud_status"] = cloud_status
+
     return out
 
 

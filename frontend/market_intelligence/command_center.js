@@ -354,10 +354,16 @@
     if (meta.ok === false || !(state.candles && state.candles.length)) {
       return '<span class="danger">' + esc(meta.error || "feed error") + "</span>";
     }
+    var providerLabel = (meta.provider || meta.source || "chart preview").toString();
+    // If provider is a known preview-only source (e.g., Yahoo), make the preview-only note explicit
+    var lower = providerLabel.toLowerCase();
+    if (lower.indexOf("yahoo") >= 0 || lower.indexOf("gc_futures") >= 0) {
+      providerLabel = "Chart preview only — not trading state";
+    }
     var line =
       esc(meta.count || state.candles.length) +
       " candles · " +
-      esc(meta.provider || meta.source || "chart preview") +
+      esc(providerLabel) +
       " · chart preview only";
     if (meta.cache_note) {
       line += ' · <span class="amber">' + esc(meta.cache_note) + "</span>";
