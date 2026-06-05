@@ -9,13 +9,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from gold_trader.core.market_intelligence_ux import (
-    LIVE_CONTEXT_PATH,
-    PROVIDER_HEALTH_PATH,
-    get_decision_for_api,
-    provider_health,
-    read_json,
-)
+from gold_trader.core.market_intelligence_ux import read_json
 
 _PKG_ROOT = Path(__file__).resolve().parents[3]
 ROOT = Path(os.getenv("GOLD_TRADER_ROOT", os.getenv("GOLD_RUNTIME_ROOT", str(_PKG_ROOT)))).resolve()
@@ -201,9 +195,22 @@ def _candles(tf: str, count: int | None = None) -> dict[str, Any]:
     symbol = os.getenv("GOLD_TWELVE_DATA_SYMBOL") or os.getenv("GOLD_SYMBOL", "XAU/USD")
     count = count or int(os.getenv("GOLD_CHART_CANDLE_COUNT", "280"))
     try:
-        return candles_for_chart(tf, symbol=symbol, count=count, repo=ROOT)
+        payload = candles_for_chart(tf, symbol=symbol, count=count, repo=ROOT)
+        if isinstance(payload, dict):
+            payload["chart_preview_only"] = True
+            payload["trading_state"] = False
+        return payload
     except Exception as exc:
-        return {"ok": False, "tf": tf.upper(), "provider": "twelvedata", "error": str(exc), "candles": [], "count": 0}
+        return {
+            "ok": False,
+            "tf": tf.upper(),
+            "provider": "chart_preview_unavailable",
+            "error": str(exc),
+            "candles": [],
+            "count": 0,
+            "chart_preview_only": True,
+            "trading_state": False,
+        }
 
 
 def _summary_payload() -> dict[str, Any]:
@@ -245,15 +252,6 @@ def _normalize_provider_health_payload(data: Any) -> dict[str, Any]:
                 row["source"] = state["source"]
         out[key] = row
     return out
-
-
-def _provider_health_for_decision(decision: dict[str, Any]) -> dict[str, Any]:
-    context = decision.get("live_market_context")
-    if not isinstance(context, dict):
-        context = read_json(LIVE_CONTEXT_PATH, {})
-    if not isinstance(context, dict):
-        context = {}
-    return _normalize_provider_health_payload(provider_health(decision, context))
 
 
 def _market_summary_from_health(health: dict[str, Any]) -> dict[str, Any]:
@@ -551,7 +549,7 @@ def _cloud_sync_meta(bundle: dict[str, Any] | None = None, *, fallback_path: Pat
             "published_at": None,
             "age_seconds": None,
             "source": "cloud_state_missing",
-            "message": "Cloud state missing - local engine has not synced yet",
+            "message": "LOCAL ENGINE NOT SYNCING",
             "max_age_seconds": CLOUD_STATE_MAX_AGE_SECONDS,
         }
     age = max(0, int((datetime.now(timezone.utc) - published).total_seconds()))
@@ -562,7 +560,7 @@ def _cloud_sync_meta(bundle: dict[str, Any] | None = None, *, fallback_path: Pat
         "published_at": published.replace(microsecond=0).isoformat(),
         "age_seconds": age,
         "source": bundle.get("source") or "cloud_state",
-        "message": "Cloud state stale - local engine not syncing" if stale else "Cloud state fresh",
+        "message": "LOCAL ENGINE NOT SYNCING" if stale else "Cloud state fresh",
         "max_age_seconds": CLOUD_STATE_MAX_AGE_SECONDS,
     }
 
@@ -570,15 +568,45 @@ def _cloud_sync_meta(bundle: dict[str, Any] | None = None, *, fallback_path: Pat
 def _cloud_decision() -> tuple[dict[str, Any] | None, dict[str, Any], str]:
     bundle = _cloud_bundle()
     decision = bundle.get("decision") if isinstance(bundle.get("decision"), dict) else None
-    if decision:
+    meta = _cloud_sync_meta(bundle)
+    source = bundle.get("source") or (decision or {}).get("source") if isinstance(decision, dict) else bundle.get("source")
+    if decision and source == "local_authoritative_engine" and meta.get("state") == "fresh":
         return dict(decision), _cloud_sync_meta(bundle), "latest_cloud_state.json"
+    return None, meta, "latest_cloud_state.json" if bundle else "missing"
 
-    split = CLOUD_STATE_DIR / "ifvg_mtf_decision_state.json"
-    if split.exists():
-        raw = read_json(split, {})
-        if isinstance(raw, dict) and raw:
-            return dict(raw), _cloud_sync_meta({}, fallback_path=split), _rel_source(split)
-    return None, _cloud_sync_meta({}), "missing"
+
+def _no_valid_state_payload(meta: dict[str, Any]) -> dict[str, Any]:
+    state = str(meta.get("state") or "missing")
+    if state not in {"missing", "stale"}:
+        state = "missing"
+    return {
+        "source": "no_valid_local_state",
+        "cloud_sync": state,
+        "cloud_state_age_seconds": meta.get("age_seconds"),
+        "action": "NO_VALID_STATE",
+        "final_score": 0,
+        "final_grade": "N/A",
+        "symbol": "XAUUSD",
+        "live_allowed": False,
+        "live_orders_enabled": False,
+        "paper_allowed": False,
+        "blockers": ["local authoritative engine is not syncing"],
+        "reasons": ["Render is dashboard-only and cannot compute trading decisions"],
+        "data_health": {
+            "spread": "unavailable",
+            "macro": "unavailable",
+            "sentiment": "unavailable",
+            "decision": "missing_or_stale",
+        },
+        "market_context": {
+            "spread_source": "unavailable",
+        },
+        "cloud_status": {
+            "broker": "not_connected",
+            "orders": "locked",
+            "data_provider": "none",
+        },
+    }
 
 
 def _paper_allowed_from_decision(decision: dict[str, Any]) -> bool:
@@ -591,62 +619,35 @@ def _paper_allowed_from_decision(decision: dict[str, Any]) -> bool:
 
 def _normalize_render_decision(decision: dict[str, Any], meta: dict[str, Any], *, synced: bool) -> dict[str, Any]:
     out = dict(decision)
-    source = "local_authoritative_engine" if synced else "render_cloud_fallback"
-    out["source"] = source
-    out["render_dashboard_mode"] = True
+    out["source"] = "local_authoritative_engine"
+    out["cloud_sync"] = "fresh"
+    out["cloud_state_age_seconds"] = meta.get("age_seconds")
     out["live_allowed"] = False
     out["live_orders_enabled"] = False
-    out["paper_allowed"] = _paper_allowed_from_decision(out)
-    out["cloud_sync"] = meta
+    if out.get("paper_allowed") is None:
+        out["paper_allowed"] = _paper_allowed_from_decision(out)
 
-    market_context = out.get("market_context") if isinstance(out.get("market_context"), dict) else {}
-    market_context = dict(market_context)
-    data_health = out.get("data_health") if isinstance(out.get("data_health"), dict) else {}
-    data_health = dict(data_health)
-    if synced:
-        if market_context.get("spread_source") == "live_tick":
-            data_health["spread"] = "live_tick"
-        elif data_health.get("spread") == "live_tick":
-            market_context["spread_source"] = "live_tick"
-    else:
-        if market_context.get("spread_source") == "live_tick":
-            market_context["spread_source"] = "render_cloud_fallback"
-        if data_health.get("spread") == "live_tick":
-            data_health["spread"] = "render_cloud_fallback"
-    out["market_context"] = market_context
-    out["data_health"] = data_health
-
-    reads = out.get("timeframe_reads") if isinstance(out.get("timeframe_reads"), list) else []
-    candle_counts = []
-    for row in reads:
-        if not isinstance(row, dict):
-            continue
-        try:
-            candle_counts.append(int(float(row.get("candles") or 0)))
-        except (TypeError, ValueError):
-            pass
     current_cloud_status = out.get("cloud_status") if isinstance(out.get("cloud_status"), dict) else {}
     cloud_status = dict(current_cloud_status)
-    cloud_status.update({
-        "analysis": "online" if any(c > 0 for c in candle_counts) else cloud_status.get("analysis", "waiting_for_data"),
-        "source": source,
-        "data_provider": "local_authoritative_engine" if synced else cloud_status.get("data_provider", "render_cloud_fallback"),
-        "broker": "MT5 bridge local" if synced else cloud_status.get("broker", "not_synced"),
-        "orders": "locked",
-        "execution_mode": "paper",
-        "live_orders": "locked",
-        "cloud_sync": meta.get("state"),
-        "cloud_sync_age_seconds": meta.get("age_seconds"),
-        "candles_loaded": cloud_status.get("candles_loaded", sum(candle_counts)),
-        "spread": market_context.get("spread_points") or cloud_status.get("spread"),
-        "spread_source": market_context.get("spread_source") or data_health.get("spread"),
-    })
+    cloud_status.setdefault("source", "local_authoritative_engine")
+    cloud_status.setdefault("data_provider", "local_authoritative_engine")
+    cloud_status.setdefault("broker", "MT5 bridge local")
+    cloud_status.setdefault("execution_mode", "paper")
+    cloud_status["orders"] = "locked"
+    cloud_status["live_orders"] = "locked"
+    cloud_status["cloud_sync"] = "fresh"
+    cloud_status["cloud_sync_age_seconds"] = meta.get("age_seconds")
     out["cloud_status"] = cloud_status
     return out
 
 
 def _cloud_provider_health() -> tuple[dict[str, Any] | None, str]:
     bundle = _cloud_bundle()
+    decision = bundle.get("decision") if isinstance(bundle.get("decision"), dict) else None
+    source = bundle.get("source") or (decision or {}).get("source") if isinstance(decision, dict) else bundle.get("source")
+    meta = _cloud_sync_meta(bundle)
+    if source != "local_authoritative_engine" or meta.get("state") != "fresh":
+        return None, "no_valid_local_state"
     raw = bundle.get("provider_health") if isinstance(bundle.get("provider_health"), dict) else None
     if raw:
         return _normalize_provider_health_payload(raw), "latest_cloud_state.json"
@@ -662,16 +663,7 @@ def _provider_health_payload(decision: dict[str, Any] | None = None) -> dict[str
     cloud, _source = _cloud_provider_health()
     if cloud is not None:
         return cloud
-    try:
-        data = _provider_health_for_decision(decision or get_decision_for_api())
-    except Exception:
-        data = read_json(PROVIDER_HEALTH_PATH, {})
-        if not data:
-            try:
-                data = get_decision_for_api().get("provider_health_summary", {})
-            except Exception:
-                data = {}
-    return _normalize_provider_health_payload(data)
+    return {}
 
 
 def _performance_payload() -> dict[str, Any]:
@@ -683,11 +675,6 @@ def _performance_payload() -> dict[str, Any]:
         if split.exists():
             raw = read_json(split, {})
             source = _rel_source(split)
-    if raw is None:
-        local = ROOT / "logs" / "paper_performance_report.json"
-        if local.exists():
-            raw = read_json(local, {})
-            source = _rel_source(local)
     if not isinstance(raw, dict) or not raw:
         raw = dict(EMPTY_PERFORMANCE)
         source = "empty"
@@ -699,7 +686,6 @@ def _performance_payload() -> dict[str, Any]:
 def _rows_payload(
     bundle_key: str,
     split_filename: str,
-    local_filename: str,
     *,
     limit: int = 50,
 ) -> dict[str, Any]:
@@ -711,11 +697,6 @@ def _rows_payload(
         if split.exists():
             rows = _read_jsonl(split, limit=limit)
             source = _rel_source(split)
-    if rows is None:
-        local = ROOT / "logs" / local_filename
-        if local.exists():
-            rows = _read_jsonl(local, limit=limit)
-            source = _rel_source(local)
     if rows is None:
         rows = []
         source = "empty"
@@ -736,55 +717,9 @@ def _normalize_journal_row(payload: dict[str, Any], source: str) -> dict[str, An
     }
 
 
-def _legacy_journal_payload(limit: int = 20) -> dict[str, Any]:
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    def add(payload: dict[str, Any], source: str) -> None:
-        stamp = payload.get("timestamp_utc") or payload.get("ts") or payload.get("time")
-        key = str(stamp or "") + "|" + str(payload.get("action") or "") + "|" + str(payload.get("final_score") or "")
-        if key in seen:
-            return
-        seen.add(key)
-        rows.append(_normalize_journal_row(payload, source))
-
-    jsonl = ROOT / "data" / "journal" / "decision_snapshots.jsonl"
-    if jsonl.exists():
-        try:
-            for line in jsonl.read_text(encoding="utf-8").splitlines()[-max(limit * 3, 30):]:
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(payload, dict):
-                    add(payload, "data/journal/decision_snapshots.jsonl")
-        except OSError:
-            pass
-
-    snap_dir = ROOT / "logs" / "decision_snapshots"
-    if snap_dir.exists():
-        try:
-            files = sorted(snap_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:max(limit * 3, 30)]
-        except OSError:
-            files = []
-        for path in files:
-            payload = read_json(path, {})
-            if isinstance(payload, dict) and payload:
-                try:
-                    source = str(path.relative_to(ROOT))
-                except ValueError:
-                    source = str(path)
-                add(payload, source)
-
-    rows.sort(key=lambda row: _parse_snapshot_time(row.get("timestamp_utc")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    rows = rows[:max(1, min(int(limit), 100))]
-    return {"count": len(rows), "rows": rows, "items": rows, "source": "legacy_snapshots" if rows else "empty"}
-
-
 def _journal_payload(limit: int = 20) -> dict[str, Any]:
     payload = _rows_payload(
         "decision_journal",
-        "decision_journal.jsonl",
         "decision_journal.jsonl",
         limit=limit,
     )
@@ -792,43 +727,22 @@ def _journal_payload(limit: int = 20) -> dict[str, Any]:
         source = str(payload.get("source") or "cloud_state")
         rows = [_normalize_journal_row(row, source) for row in payload["rows"]]
         return {"count": len(rows), "rows": rows, "items": rows, "source": source}
-    return _legacy_journal_payload(limit)
+    return {"count": 0, "rows": [], "items": [], "source": "empty"}
 
 
 def _paper_signals_payload(limit: int = 20) -> dict[str, Any]:
     return _rows_payload(
         "paper_signals",
         "paper_signal_outcomes.jsonl",
-        "paper_signal_outcomes.jsonl",
         limit=limit,
     )
-
-
-def _enrich_decision(decision: dict[str, Any], health: dict[str, Any] | None = None) -> dict[str, Any]:
-    try:
-        decision = dict(decision)
-        health = health if isinstance(health, dict) else _provider_health_payload(decision)
-        decision["provider_health_summary"] = health
-        decision["market_intelligence_summary"] = _market_summary_from_health(health)
-        decision["market_levels_summary"] = _market_levels_payload(decision)
-        decision["smart_money_summary"] = _smart_money_payload(decision)
-        decision["data_readiness_summary"] = _data_readiness_payload(decision, health)
-    except Exception:
-        pass
-    return decision
 
 
 def _decision_payload(*, refresh: bool = False) -> dict[str, Any]:
     cloud_decision, meta, _source = _cloud_decision()
     if cloud_decision:
-        decision = _normalize_render_decision(cloud_decision, meta, synced=True)
-        return _enrich_decision(decision, _provider_health_payload(decision))
-
-    decision = get_decision_for_api(refresh=refresh)
-    if not isinstance(decision, dict):
-        return {}
-    decision = _normalize_render_decision(decision, meta, synced=False)
-    return _enrich_decision(decision)
+        return _normalize_render_decision(cloud_decision, meta, synced=True)
+    return _no_valid_state_payload(meta)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -928,7 +842,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/market-intelligence":
             return self.json(_decision_payload().get("market_intelligence_summary", {}))
         if path == "/api/market-levels":
-            return self.json(_market_levels_payload(_decision_payload()))
+            return self.json(_decision_payload().get("market_levels_summary", {}))
         if path == "/api/smart-money":
             return self.json(_decision_payload().get("smart_money_summary", {}))
         if path == "/api/data-readiness":
@@ -953,11 +867,13 @@ class Handler(SimpleHTTPRequestHandler):
                 "source": payload.get("provider") or payload.get("source") or "unknown",
                 "symbol": payload.get("symbol") or os.getenv("GOLD_SYMBOL", "XAUUSD"),
                 "timeframe": tf_raw,
-                "online": payload.get("provider") == "twelvedata" and not payload.get("cache_note"),
+                "online": False,
                 "bars": payload.get("candles", []),
                 "count": payload.get("count", 0),
                 "error": payload.get("error"),
                 "note": payload.get("cache_note") or payload.get("fallback_note"),
+                "chart_preview_only": True,
+                "trading_state": False,
             })
         if path in {"/command-center.js", "/static/app.js"}:
             body, fallback = _command_center_js_bytes()

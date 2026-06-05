@@ -55,25 +55,34 @@
   }
 
   function cloudSync(d) {
-    var sync = d.cloud_sync || {};
+    var sync = typeof d.cloud_sync === "string" ? { state: d.cloud_sync } : (d.cloud_sync || {});
     var age = sync.age_seconds;
+    if (age === undefined && d.cloud_state_age_seconds !== undefined) {
+      age = d.cloud_state_age_seconds;
+      sync.age_seconds = age;
+    }
     var stale = sync.state === "stale" || (age !== null && age !== undefined && Number(age) > 300);
     if (!sync.state) {
       sync.state = "missing";
     }
     sync.isStale = stale;
     sync.label = stale ? "stale" : sync.state;
-    sync.message = stale ? "Cloud state stale — local engine not syncing" : (sync.message || "");
+    sync.message = sync.state === "fresh" ? "Cloud state fresh" : "LOCAL ENGINE NOT SYNCING";
     return sync;
   }
 
   function isLocalAuthoritative(d) {
-    return d.source === "local_authoritative_engine" || (d.cloud_sync || {}).source === "local_authoritative_engine";
+    return d.source === "local_authoritative_engine";
+  }
+
+  function isNoValidState(d) {
+    return d.source === "no_valid_local_state" || d.action === "NO_VALID_STATE";
   }
 
   function sourceLabel(d) {
     if (isLocalAuthoritative(d)) return "local authoritative engine";
-    return d.source || ((d.cloud_status || {}).source) || "render cloud fallback";
+    if (isNoValidState(d)) return "no valid local state";
+    return d.source || ((d.cloud_status || {}).source) || "no valid local state";
   }
 
   function brokerLabel(d) {
@@ -84,7 +93,8 @@
   function dataLabel(d) {
     if (isLocalAuthoritative(d)) return "";
     var provider = (d.cloud_status || {}).data_provider;
-    return provider && provider !== "local_authoritative_engine" ? provider : "render cloud fallback";
+    if (provider === "none") return "";
+    return provider && provider !== "local_authoritative_engine" ? provider + " chart preview only" : "";
   }
 
   function scoreMap(d) {
@@ -193,6 +203,7 @@
     var age = d.source_age_status || {};
     var sync = cloudSync(d);
     var provider = dataLabel(d);
+    var syncProblem = isNoValidState(d) || sync.state !== "fresh";
     var navItems = [
       "trade:Trade Cockpit",
       "market:Market Context",
@@ -253,7 +264,7 @@
       '</span>' +
       (provider ? '<span class="chip">Data <b>' + esc(provider) + '</b></span>' : "") +
       '<button type="button" class="chip ok" id="gt-refresh">Refresh</button></div></div>' +
-      (sync.isStale ? '<div class="brief danger" style="margin-bottom:18px">' + esc(sync.message) + "</div>" : "")
+      (syncProblem ? '<div class="brief danger" style="margin-bottom:18px">' + esc(sync.message) + "</div>" : "")
     );
   }
 
@@ -346,12 +357,25 @@
     var line =
       esc(meta.count || state.candles.length) +
       " candles · " +
-      esc(meta.provider || "twelvedata") +
-      " · live feed";
+      esc(meta.provider || meta.source || "chart preview") +
+      " · chart preview only";
     if (meta.cache_note) {
       line += ' · <span class="amber">' + esc(meta.cache_note) + "</span>";
     }
     return line;
+  }
+
+  function noValidStatePage(d) {
+    var sync = cloudSync(d);
+    return (
+      '<section class="card hero"><div class="heroRow"><div><div class="label">LOCAL ENGINE NOT SYNCING</div><div class="verdict">NO VALID STATE</div><div class="meta">Render is dashboard-only · Orders locked</div><div class="brief danger">No valid trading state. Start local PC stack and sync state.</div><div class="brief">' +
+      esc((d.reasons || ["Render is dashboard-only and cannot compute trading decisions"]).join(" ")) +
+      '</div></div><div class="scoreRing" style="--score:0"><div class="scoreInner"><div><strong>0</strong><br/><span>/100</span><br/><small>' +
+      esc(sync.label || "missing") +
+      '</small></div></div></div></div></section><section class="panel" style="margin-top:14px"><h4>Sync Required</h4><div class="body contextGrid"><div class="ctx"><span>Cloud Sync</span><b class="danger">' +
+      esc(sync.label || "missing") +
+      '</b></div><div class="ctx"><span>Broker</span><b>not connected</b></div><div class="ctx"><span>Orders</span><b class="amber">locked</b></div><div class="ctx"><span>Trading State</span><b class="danger">unavailable</b></div></div></section>'
+    );
   }
 
   function chart() {
@@ -837,6 +861,8 @@
         '<section class="card"><h3>Load error</h3><div class="body" style="padding:18px"><p class="danger">' +
         esc(state.loadError) +
         '</p><button type="button" class="chip ok" id="gt-retry">Retry</button></div></section>';
+    } else if (isNoValidState(d) && state.page !== "json") {
+      body = noValidStatePage(d);
     } else if (state.page === "trade") body = tradePage(d);
     else if (state.page === "market") body = marketPage(d);
     else if (state.page === "signal") body = signalPage(d);

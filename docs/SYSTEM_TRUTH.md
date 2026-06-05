@@ -4,9 +4,12 @@ This is the current operating truth for Gold Trader. If another document conflic
 
 ## Authority Split
 
+- There is exactly one trading truth: `data/cloud_state/latest_cloud_state.json` published by the local authoritative engine.
 - Local PC is the authoritative trading and market-data engine.
 - Render is the official remote dashboard for mirrored state.
 - Render is not the trading brain and does not talk directly to the local MT5 bridge.
+- Render must not compute trading decisions.
+- Render must not use Twelve Data, Yahoo, FMP, Finnhub, or any other cloud provider to create or modify trading state.
 - Live orders remain locked.
 - Paper collection is allowed only from the local authoritative decision state.
 
@@ -67,7 +70,12 @@ Render reads synced state from:
 data/cloud_state/latest_cloud_state.json
 ```
 
-Render must report `render_cloud_fallback` or cloud-sync missing until local state has been ingested.
+Render must report `no_valid_local_state` until fresh local authoritative state has been ingested.
+If cloud sync is missing or older than 300 seconds, the dashboard must show:
+
+```text
+LOCAL ENGINE NOT SYNCING
+```
 
 ## Cloud Sync Contract
 
@@ -105,6 +113,7 @@ When synced, `/api/decision` must expose:
 ```json
 {
   "source": "local_authoritative_engine",
+  "cloud_sync": "fresh",
   "live_allowed": false,
   "live_orders_enabled": false,
   "market_context": {
@@ -124,7 +133,7 @@ When synced, `/api/decision` must expose:
 If cloud state is older than 300 seconds, the dashboard must show:
 
 ```text
-Cloud state stale — local engine not syncing
+LOCAL ENGINE NOT SYNCING
 ```
 
 ## Safety Rules
@@ -134,6 +143,8 @@ Cloud state stale — local engine not syncing
 - Do not tune signal thresholds from one signal.
 - Do not use placeholder data to satisfy trading gates.
 - Do not claim MT5, live tick, or local-authoritative data on Render unless synced local state proves it.
+- Do not use Render provider-key gaps as trading blockers when fresh synced local state exists.
+- Render provider/chart data is chart preview only and never trading truth.
 
 ## Historical Docs
 
