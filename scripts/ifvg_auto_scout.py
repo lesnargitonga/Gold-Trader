@@ -25,6 +25,19 @@ def run_full_engine() -> None:
         scout_log(f"live inputs updater error: {exc!r}", level="WARNING")
     subprocess.run([sys.executable, str(FULL_ENGINE)], cwd=str(REPO), check=True)
 
+    # Post-run: journal the decision, update paper outcomes, and refresh report.
+    # Failures here should not kill the scout; just warn.
+    post_steps = [
+        REPO / "scripts" / "journal_decision_snapshot.py",
+        REPO / "scripts" / "update_paper_signal_outcomes.py",
+        REPO / "scripts" / "report_paper_performance.py",
+    ]
+    for step in post_steps:
+        try:
+            subprocess.run([sys.executable, str(step)], cwd=str(REPO), check=False)
+        except Exception as exc:
+            scout_log(f"post-engine step {step.name} failed: {exc!r}", level="WARNING")
+
 def main() -> int:
     scout_log(f"IFVG full-system auto-scout starting · every {POLL_SECONDS}s")
     n = 0
