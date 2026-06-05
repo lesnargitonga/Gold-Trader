@@ -191,21 +191,38 @@ fi
 step "Web UI"
 WEB_PID_FILE="$PID_DIR/web.pid"
 WEB_LOG="$LOG_DIR/web.log"
+web_pid=""
+if [[ -f "$WEB_PID_FILE" ]]; then
+    web_pid="$(cat "$WEB_PID_FILE" 2>/dev/null || true)"
+fi
+if [[ -n "$web_pid" ]] && kill -0 "$web_pid" 2>/dev/null; then
+    if tr '\0' ' ' < "/proc/$web_pid/cmdline" 2>/dev/null | grep -q "gold_trader.web.market_intelligence_api"; then
+        log "Render command center already running locally (pid=$web_pid, port=$WEB_PORT)"
+    else
+        warn "replacing old local web UI process with Render command center (pid=$web_pid)"
+        kill "$web_pid" 2>/dev/null || true
+        sleep 1
+        rm -f "$WEB_PID_FILE"
+    fi
+fi
+
 if [[ -f "$WEB_PID_FILE" ]] && kill -0 "$(cat "$WEB_PID_FILE")" 2>/dev/null; then
-    log "web UI already running (pid=$(cat "$WEB_PID_FILE"), port=$WEB_PORT)"
+    :
 else
     cd "$ROOT"
     setsid env PYTHONPATH=src \
+        GOLD_TRADER_ROOT="$ROOT" \
         GOLD_BRIDGE_URL="$BRIDGE_URL" \
         GOLD_BRIDGE_SECRET="${GOLD_BRIDGE_SECRET:-}" \
         OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
-        "$VENV" -m gold_trader.cli serve \
-        --host 127.0.0.1 --port "$WEB_PORT" \
+        HOST=127.0.0.1 \
+        PORT="$WEB_PORT" \
+        "$VENV" -m gold_trader.web.market_intelligence_api \
         >> "$WEB_LOG" 2>&1 &
     echo $! > "$WEB_PID_FILE"
     sleep 1
     if kill -0 "$(cat "$WEB_PID_FILE")" 2>/dev/null; then
-        log "web UI started (pid=$(cat "$WEB_PID_FILE"))"
+        log "Render command center started locally (pid=$(cat "$WEB_PID_FILE"))"
     else
         warn "web UI failed — tail $WEB_LOG"
         rm -f "$WEB_PID_FILE"

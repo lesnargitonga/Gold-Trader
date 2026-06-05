@@ -26,7 +26,12 @@ Local services:
 - MT5 bridge: `http://127.0.0.1:8765`
 - Web UI/API: `http://127.0.0.1:8770`
 
-Official local UI files:
+Official local dashboard files:
+
+- `src/gold_trader/web/market_intelligence_api.py`
+- `frontend/market_intelligence/command_center.js`
+
+The older local static UI files are historical unless explicitly reactivated:
 
 - `src/gold_trader/web/server.py`
 - `src/gold_trader/web/static/index.html`
@@ -55,9 +60,9 @@ If `GOLD_RENDER_INGEST_URL` and `GOLD_CLOUD_SYNC_TOKEN` are present, the scout a
 scripts/publish_state_to_render.py
 ```
 
-## Official Render Dashboard
+## Official Dashboard Frontend
 
-Render serves the current remote dashboard through:
+Local and Render both serve the same current dashboard frontend through:
 
 - `scripts/render_live_pipeline_repaired.py`
 - `scripts/render_market_intelligence_ux.py`

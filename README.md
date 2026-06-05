@@ -1,8 +1,8 @@
 # Gold Trader
 
 Autonomous XAUUSD research and supervised paper-trading system. The local PC is the
-authoritative trading/data engine. Render is the official remote dashboard that
-mirrors synced local state. Live orders remain locked.
+authoritative trading/data engine. The Command Center frontend is used locally and
+on Render, with Render mirroring synced local state. Live orders remain locked.
 
 > **Current system truth:** [docs/SYSTEM_TRUTH.md](docs/SYSTEM_TRUTH.md)
 >

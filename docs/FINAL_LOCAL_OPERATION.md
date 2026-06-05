@@ -2,11 +2,10 @@
 
 Current system truth is defined in `docs/SYSTEM_TRUTH.md`. If this file conflicts with it, `docs/SYSTEM_TRUTH.md` wins.
 
-The official local UI is served by:
+The official local UI is the same Command Center frontend used by Render:
 
-- `src/gold_trader/web/server.py`
-- `src/gold_trader/web/static/index.html`
-- `src/gold_trader/web/static/app.js`
+- `src/gold_trader/web/market_intelligence_api.py`
+- `frontend/market_intelligence/command_center.js`
 
 Start it with:
 
@@ -16,7 +15,7 @@ bash scripts/start.sh
 
 The local PC is the authoritative trading engine.
 Render is the official remote dashboard, but it only mirrors synced local state and must not act as the trading brain.
-The `frontend/market_intelligence/command_center.js` file is the active Render dashboard UI; older command-center prototypes are historical.
+The `frontend/market_intelligence/command_center.js` file is the active dashboard UI locally and on Render; older command-center prototypes and the old static local UI are historical.
 Live orders remain locked.
 
 ## Verify
@@ -33,9 +32,10 @@ http://127.0.0.1:8770
 Check that it says:
 
 ```
-LOCAL AUTHORITATIVE MODE
-Paper mode — live orders locked
-Broker: MT5 bridge local · cTrader pending
+RENDER DASHBOARD MODE
+Source: local authoritative engine
+Orders locked
+Cloud sync fresh
 ```
 
 For Render dashboard verification:
