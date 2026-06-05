@@ -62,6 +62,8 @@ class MarketContext:
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    sentiment_penalty: int = 0
+    volatility_penalty: int = 0
 
 @dataclass
 class Decision:
@@ -126,7 +128,10 @@ def load_policy() -> dict[str, Any]:
             "block_if_context_unavailable": False,
             "require_live_spread_for_trade": True,
             "require_fresh_macro_for_live": True,
-            "require_fresh_sentiment_for_live": True
+            "require_fresh_sentiment_for_live": True,
+            "sentiment_additional_penalty": 12,
+            "block_on_dead_volatility": True,
+            "volatility_penalty_points": 12
         },
         "journal": {
             "paths": ["logs/trade_journal.csv", "data/paper/trades.csv", "data/live/trades.csv"]
@@ -494,7 +499,12 @@ def build_market_context(symbol: str, policy: dict[str, Any], reads: list[Timefr
     ctx.volatility_state, vol_notes = volatility_state(symbol, reads)
     ctx.notes.extend(vol_notes)
     if ctx.volatility_state in {"extreme", "dead"}:
-        ctx.blockers.append(f"volatility state is {ctx.volatility_state}")
+        # Policy controls whether dead/extreme volatility blocks live or applies a penalty
+        if mf.get("block_on_dead_volatility", True):
+            ctx.blockers.append(f"volatility state is {ctx.volatility_state}")
+        else:
+            ctx.volatility_penalty = int(mf.get("volatility_penalty_points", 12))
+            ctx.warnings.append(f"volatility state is {ctx.volatility_state}; penalty applied")
     ctx.macro_state, macro_blockers, macro_notes = macro_filter(policy)
     ctx.blockers.extend(macro_blockers); ctx.notes.extend(macro_notes)
     if ctx.macro_state == "unknown" and mf.get("block_if_context_unavailable"):
@@ -515,12 +525,15 @@ def build_market_context(symbol: str, policy: dict[str, Any], reads: list[Timefr
     ctx.sentiment_score = score; ctx.sentiment_state = sent_state; ctx.notes.extend(sent_notes)
     if score is None and mf.get("block_if_context_unavailable"):
         ctx.blockers.append("sentiment unavailable")
+        # apply penalty when sentiment is unavailable
+        ctx.sentiment_penalty = int(mf.get("sentiment_additional_penalty", 12))
     # Enforce fresh normalized sentiment file for live trade authority
     sent_norm = REPO / "logs" / "sentiment_state.json"
     if sent_norm.exists():
         sd = load_json(sent_norm, {})
         if not sd.get("fresh", False) and mf.get("require_fresh_sentiment_for_live", True):
             ctx.blockers.append("sentiment state stale/unavailable; live trade not allowed")
+            ctx.sentiment_penalty = int(mf.get("sentiment_additional_penalty", 12))
         elif not sd.get("fresh", False):
             ctx.warnings.append("sentiment state stale/unavailable; paper only")
     if mf.get("block_if_sentiment_conflicts") and side in {"buy", "sell"} and sent_state in {"bullish", "bearish"}:
@@ -663,6 +676,13 @@ def decide(policy, reads, guard):
     blockers.extend(market_context.blockers)
     d1, h4 = next((r for r in usable if r.timeframe=="D1"), None), next((r for r in usable if r.timeframe=="H4"), None)
     if d1 and h4 and side_from_bias(d1.bias) != "none" and side_from_bias(h4.bias) != "none" and side_from_bias(d1.bias) != side_from_bias(h4.bias): blockers.append("D1 and H4 conflict")
+    # Higher-timeframe alignment requirement: at least 2/3 of HTFs (and minimum 2) must align
+    htf_total = len(htf)
+    if htf_total:
+        htf_aligned = sum(1 for r in htf if side != "none" and (side_from_bias(r.bias) == side or r.ifvg_side == side))
+        required_htf = max(2, (2 * htf_total + 2) // 3)  # ceil(2/3 * htf_total) with minimum 2
+        if htf_aligned < required_htf:
+            blockers.append(f"only {htf_aligned}/{htf_total} higher-timeframes align; need at least {required_htf}")
     aligned = sum(1 for r in usable if side != "none" and (side_from_bias(r.bias)==side or r.ifvg_side==side))
     min_aligned = int(policy["confirmation_rules"].get("minimum_aligned_timeframes", 5))
     if aligned < min_aligned: blockers.append(f"only {aligned}/{len(usable)} timeframes align; need at least {min_aligned}")
@@ -681,7 +701,15 @@ def decide(policy, reads, guard):
     el, eh, stop, tp1, tp2, tp3, rr1, rr2 = geometry(side, usable)
     if rr1 is not None and rr1 < float(policy["minimum_rr_to_tp1"]): blockers.append("TP1 reward/risk below policy")
     if rr2 is not None and rr2 < float(policy["minimum_rr_to_tp2"]): blockers.append("TP2 reward/risk below policy")
-    score = max(0, min(100, 35 + aligned*7 + (10 if any(r.ifvg_side==side for r in usable) else 0) + (8 if any(r.timeframe in entry_names and r.ifvg_side==side for r in usable) else 0) + (8 if any(r.displacement for r in usable) else 0) + (8 if any(r.liquidity_sweep for r in usable) else 0) - 12*len(blockers)))
+    # Base score calculation; subtract blockers and any explicit penalties from market context
+    base = 35 + aligned * 7
+    base += (10 if any(r.ifvg_side == side for r in usable) else 0)
+    base += (8 if any(r.timeframe in entry_names and r.ifvg_side == side for r in usable) else 0)
+    base += (8 if any(r.displacement for r in usable) else 0)
+    base += (8 if any(r.liquidity_sweep for r in usable) else 0)
+    penalty_from_blockers = 12 * len(blockers)
+    extra_penalty = int(market_context.sentiment_penalty or 0) + int(market_context.volatility_penalty or 0)
+    score = max(0, min(100, base - penalty_from_blockers - extra_penalty))
     if score < int(policy["minimum_final_score"]): blockers.append("final score below Grade-A policy")
     final_grade = grade(score)
     action = "WAIT" if blockers else "TRADE_READY_PAPER_AUTO_ALERT_AUTO"
