@@ -503,6 +503,10 @@ def build_market_context(symbol: str, policy: dict[str, Any], reads: list[Timefr
     macro_norm = REPO / "data" / "macro" / "economic_calendar.json"
     if macro_norm.exists():
         md = load_json(macro_norm, {})
+        # If normalized macro explicitly reports blocked and is fresh, treat as a live blocker
+        md_state = str(md.get("state") or "").lower()
+        if md_state == "blocked" and md.get("fresh", False) and mf.get("require_fresh_macro_for_live", True):
+            ctx.blockers.append("macro state blocked; live trade not allowed")
         if not md.get("fresh", False) and mf.get("require_fresh_macro_for_live", True):
             ctx.blockers.append("macro state stale/unavailable; live trade not allowed")
         elif not md.get("fresh", False):

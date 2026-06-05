@@ -1,0 +1,13 @@
+{
+  "source": "manual",
+  "updated_at": "2026-06-05T04:00:00+00:00",
+  "events": [
+    {
+      "country": "US",
+      "currency": "USD",
+      "event": "Nonfarm Payrolls",
+      "impact": "high",
+      "date": "2026-06-05T12:30:00+00:00"
+    }
+  ]
+}
