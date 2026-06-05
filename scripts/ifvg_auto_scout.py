@@ -16,27 +16,32 @@ POLL_SECONDS = int(os.environ.get("IFVG_SCOUT_INTERVAL", str(DEFAULT_SCAN_SECOND
 RESEARCH_EVERY_N = max(1, int(os.environ.get("IFVG_SCOUT_RESEARCH_EVERY", "3")))
 FULL_ENGINE = REPO / "scripts" / "ifvg_full_system_engine.py"
 UPDATER = REPO / "scripts" / "update_live_inputs.py"
+JOURNAL = REPO / "scripts" / "journal_decision_snapshot.py"
+OUTCOMES = REPO / "scripts" / "update_paper_signal_outcomes.py"
+REPORT = REPO / "scripts" / "report_paper_performance.py"
+
+
+def child_env() -> dict[str, str]:
+    env = os.environ.copy()
+    src = str(REPO / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = src if not existing else f"{src}{os.pathsep}{existing}"
+    return env
+
+
+def run_step(step: Path) -> None:
+    try:
+        result = subprocess.run([sys.executable, str(step)], cwd=str(REPO), env=child_env(), check=False)
+    except Exception as exc:
+        scout_log(f"decision refresh step {step.name} failed: {exc!r}", level="WARNING")
+        return
+    if result.returncode != 0:
+        scout_log(f"decision refresh step {step.name} exited {result.returncode}", level="WARNING")
+
 
 def run_full_engine() -> None:
-    # Run live-input updaters first (do not abort scout if they fail)
-    try:
-        subprocess.run([sys.executable, str(UPDATER)], cwd=str(REPO), check=False)
-    except Exception as exc:
-        scout_log(f"live inputs updater error: {exc!r}", level="WARNING")
-    subprocess.run([sys.executable, str(FULL_ENGINE)], cwd=str(REPO), check=True)
-
-    # Post-run: journal the decision, update paper outcomes, and refresh report.
-    # Failures here should not kill the scout; just warn.
-    post_steps = [
-        REPO / "scripts" / "journal_decision_snapshot.py",
-        REPO / "scripts" / "update_paper_signal_outcomes.py",
-        REPO / "scripts" / "report_paper_performance.py",
-    ]
-    for step in post_steps:
-        try:
-            subprocess.run([sys.executable, str(step)], cwd=str(REPO), check=False)
-        except Exception as exc:
-            scout_log(f"post-engine step {step.name} failed: {exc!r}", level="WARNING")
+    for step in (UPDATER, FULL_ENGINE, JOURNAL, OUTCOMES, REPORT):
+        run_step(step)
 
 def main() -> int:
     scout_log(f"IFVG full-system auto-scout starting · every {POLL_SECONDS}s")

@@ -82,9 +82,24 @@ except Exception:
 " 2>/dev/null
 }
 
+run_decision_refresh_once() {
+    local steps=(
+        "$ROOT/scripts/update_live_inputs.py"
+        "$ROOT/scripts/ifvg_full_system_engine.py"
+        "$ROOT/scripts/journal_decision_snapshot.py"
+        "$ROOT/scripts/update_paper_signal_outcomes.py"
+        "$ROOT/scripts/report_paper_performance.py"
+    )
+    local step_path
+    for step_path in "${steps[@]}"; do
+        PYTHONPATH=src "$VENV" "$step_path" >> "$LOG_DIR/start_decision_refresh.log" 2>&1 \
+            || warn "$(basename "$step_path") failed — check logs/start_decision_refresh.log"
+    done
+}
+
 launch_bridge() {
-    # Wine Python needs a pseudo-TTY — nohup/setsid cause init_sys_streams WinError 6.
-    script -qefc "bash $(printf '%q' "$BRIDGE_SCRIPT")" "$LOG_DIR/bridge.log" &
+    # Wine Python needs a pseudo-TTY; script provides it while setsid detaches cleanly.
+    setsid script -qefc "bash $(printf '%q' "$BRIDGE_SCRIPT")" "$LOG_DIR/bridge.log" >/dev/null 2>&1 &
     echo $! > "$PID_DIR/bridge.pid"
 }
 
@@ -135,17 +150,16 @@ fi
 step "IFVG auto-scout"
 SCOUT_PID_FILE="$PID_DIR/scout.pid"
 SCOUT_STDOUT_LOG="$LOG_DIR/ifvg_scout.process.log"
-existing_scout="$(pgrep -f "scripts/ifvg_auto_scout.py" | head -n 1 || true)"
+existing_scout="$(pgrep -f "python.*scripts/ifvg_auto_scout.py" | head -n 1 || true)"
+cd "$ROOT"
+run_decision_refresh_once
 if [[ -f "$SCOUT_PID_FILE" ]] && kill -0 "$(cat "$SCOUT_PID_FILE")" 2>/dev/null; then
     log "IFVG scout already running (pid=$(cat "$SCOUT_PID_FILE"))"
 elif [[ -n "$existing_scout" ]] && kill -0 "$existing_scout" 2>/dev/null; then
     echo "$existing_scout" > "$SCOUT_PID_FILE"
     log "IFVG scout already running (pid=$existing_scout)"
 else
-    # Run live input updaters once before starting the scout so normalized files exist
-    cd "$ROOT"
-    "$VENV" "$ROOT/scripts/update_live_inputs.py" >> "$LOG_DIR/update_live_inputs.log" 2>&1 || warn "update_live_inputs failed — check $LOG_DIR/update_live_inputs.log"
-    nohup env PYTHONPATH=src \
+    setsid env PYTHONPATH=src \
         GOLD_BRIDGE_URL="$BRIDGE_URL" \
         GOLD_BRIDGE_SECRET="${GOLD_BRIDGE_SECRET:-}" \
         OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
@@ -174,7 +188,7 @@ if [[ -f "$WEB_PID_FILE" ]] && kill -0 "$(cat "$WEB_PID_FILE")" 2>/dev/null; the
     log "web UI already running (pid=$(cat "$WEB_PID_FILE"), port=$WEB_PORT)"
 else
     cd "$ROOT"
-    nohup env PYTHONPATH=src \
+    setsid env PYTHONPATH=src \
         GOLD_BRIDGE_URL="$BRIDGE_URL" \
         GOLD_BRIDGE_SECRET="${GOLD_BRIDGE_SECRET:-}" \
         OPENAI_API_KEY="${OPENAI_API_KEY:-}" \

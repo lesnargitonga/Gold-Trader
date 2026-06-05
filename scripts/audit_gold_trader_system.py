@@ -9,7 +9,7 @@ Checks performed:
 2. /api/decision returns valid JSON
 3. /api/decision matches `logs/ifvg_mtf_decision_state.json` (if present)
 4. Bridge endpoint responsiveness (tries common endpoints)
-5. Spread source reported by decision (`market_context.spread.source`)
+5. Spread source reported by decision (`market_context.spread_source` or `data_health.spread`)
 6. Macro file existence and freshness (`data/macro/economic_calendar.json`)
 7. Sentiment file existence, freshness and score (`logs/sentiment_state.json`)
 8. Decision staleness (timestamp age)
@@ -183,54 +183,67 @@ def main() -> int:
 
     # 4) Bridge /last-tick works (try common endpoints)
     bridge_base = os.environ.get("GOLD_BRIDGE_URL", "http://127.0.0.1:8765")
-    # 1) Environment variable
-    bridge_secret = os.environ.get("GOLD_BRIDGE_SECRET")
-    bridge_secret_source = "env:GOLD_BRIDGE_SECRET" if bridge_secret else "missing"
-    # 2) config/secrets.json -> bridge_secret (or fallback keys)
+    bridge_secret_candidates: list[tuple[str, str]] = []
+
+    def add_bridge_secret(source: str, value: str | None) -> None:
+        secret = (value or "").strip()
+        if not secret:
+            return
+        if any(existing == secret for _src, existing in bridge_secret_candidates):
+            return
+        bridge_secret_candidates.append((source, secret))
+
+    add_bridge_secret("env:GOLD_BRIDGE_SECRET", os.environ.get("GOLD_BRIDGE_SECRET"))
+    # config/secrets.json -> bridge_secret (or fallback keys)
     try:
         sec_path = ROOT / "config" / "secrets.json"
         if sec_path.exists():
             sec = json.loads(sec_path.read_text())
             file_secret = sec.get("bridge_secret") or sec.get("GOLD_BRIDGE_SECRET") or sec.get("GOLD_BRIDGE_TOKEN")
-            if not bridge_secret and file_secret:
-                bridge_secret = file_secret
-                bridge_secret_source = "config/secrets.json"
+            add_bridge_secret("config/secrets.json", file_secret)
     except Exception:
         pass
-    # 3) ~/.gold-mt5-wine/credentials.env -> GOLD_BRIDGE_SECRET
-    if not bridge_secret:
-        try:
-            cred_path = Path.home() / ".gold-mt5-wine" / "credentials.env"
-            if cred_path.exists():
-                for line in cred_path.read_text().splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if line.startswith("export "):
-                        line = line[len("export "):]
-                    if "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = v.strip().strip("'\"")
-                    if k == "GOLD_BRIDGE_SECRET":
-                        bridge_secret = v
-                        bridge_secret_source = "~/.gold-mt5-wine/credentials.env"
-                        break
-        except Exception:
-            pass
+    # ~/.gold-mt5-wine/credentials.env -> GOLD_BRIDGE_SECRET
+    try:
+        cred_path = Path.home() / ".gold-mt5-wine" / "credentials.env"
+        if cred_path.exists():
+            for line in cred_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):]
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip("'\"")
+                if k == "GOLD_BRIDGE_SECRET":
+                    add_bridge_secret("~/.gold-mt5-wine/credentials.env", v)
+                    break
+    except Exception:
+        pass
+    if not bridge_secret_candidates:
+        bridge_secret_candidates.append(("missing", ""))
 
     bridge_ok = False
     bridge_details = []
+    bridge_secret_source = "missing"
     endpoints = ["/last_tick", "/last-tick", "/tick", "/tick?symbol=GOLD", "/last_tick?symbol=GOLD", "/open_positions?symbol=GOLD", "/"]
     for ep in endpoints:
         url = bridge_base.rstrip("/") + ep
-        code, body, _ = bridge_http_get(url, bridge_secret=bridge_secret, timeout=3)
-        bridge_details.append((url, code))
-        if code == 200:
-            bridge_ok = True
+        for source, bridge_secret in bridge_secret_candidates:
+            code, body, _ = bridge_http_get(url, bridge_secret=bridge_secret, timeout=3)
+            bridge_details.append((url, source, code))
+            if code == 200:
+                bridge_ok = True
+                bridge_secret_source = source
+                break
+            if code not in {401, 403}:
+                break
+        if bridge_ok:
             break
-    bridge_statuses = {code for _url, code in bridge_details}
+    bridge_statuses = {code for _url, _source, code in bridge_details}
     bridge_failure = "bridge_unreachable"
     if not bridge_ok and bridge_statuses.intersection({401, 403}):
         bridge_failure = "bridge_auth_failed"
@@ -250,14 +263,26 @@ def main() -> int:
     spread_details = "unknown"
     try:
         mc = api_decision.get("market_context") if isinstance(api_decision, dict) else None
+        dh = api_decision.get("data_health") if isinstance(api_decision, dict) else None
+        dh_spread = dh.get("spread") if isinstance(dh, dict) else None
         if mc and isinstance(mc, dict):
+            direct_source = mc.get("spread_source")
             spread = mc.get("spread") or mc.get("spread_feed") or mc.get("spread_points")
-            if isinstance(spread, dict):
+            if direct_source:
+                spread_ok = direct_source == "live_tick"
+                spread_details = f"market_context.spread_source={direct_source!r}; data_health.spread={dh_spread!r}"
+            elif dh_spread:
+                spread_ok = dh_spread == "live_tick"
+                spread_details = f"data_health.spread={dh_spread!r}"
+            elif isinstance(spread, dict):
                 source = spread.get("source")
-                spread_ok = (source == "live_tick")
-                spread_details = f"source={source}"
+                spread_ok = source == "live_tick"
+                spread_details = f"market_context.spread.source={source!r}; data_health.spread={dh_spread!r}"
             else:
-                spread_details = f"market_context spread entry: {spread!r}"
+                spread_details = f"market_context spread entry: {spread!r}; data_health.spread={dh_spread!r}"
+        elif dh_spread:
+            spread_ok = dh_spread == "live_tick"
+            spread_details = f"data_health.spread={dh_spread!r}"
         else:
             spread_details = "no market_context in API decision"
     except Exception as exc:

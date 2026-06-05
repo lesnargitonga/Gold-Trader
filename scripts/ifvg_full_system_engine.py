@@ -9,7 +9,7 @@ requires explicit external wiring.
 """
 from __future__ import annotations
 
-import csv, json, math, os, sys, time, urllib.parse, urllib.request
+import csv, json, math, os, sys, time, urllib.error, urllib.parse, urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +54,7 @@ class DailyGuard:
 @dataclass
 class MarketContext:
     spread_points: float | None = None
+    spread_source: str = "unknown"
     session: str = "unknown"
     volatility_state: str = "unknown"
     macro_state: str = "unknown"
@@ -98,6 +99,38 @@ def load_json(path: Path, default: Any) -> Any:
         return json.loads(path.read_text()) if path.exists() else default
     except Exception:
         return default
+
+
+def bridge_secret_candidates() -> list[str]:
+    candidates: list[str] = []
+
+    def add(value: str) -> None:
+        secret = (value or "").strip()
+        if secret and secret not in candidates:
+            candidates.append(secret)
+
+    env = os.getenv("GOLD_BRIDGE_SECRET", "").strip()
+    add(env)
+    data = load_json(REPO / "config" / "secrets.json", {})
+    if isinstance(data, dict):
+        add(str(data.get("bridge_secret") or ""))
+    cred_path = Path.home() / ".gold-mt5-wine" / "credentials.env"
+    try:
+        if cred_path.exists():
+            for raw in cred_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):]
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key.strip() == "GOLD_BRIDGE_SECRET":
+                    add(value.strip().strip("'\""))
+    except Exception:
+        pass
+    return candidates
 
 def load_policy() -> dict[str, Any]:
     default = {
@@ -154,13 +187,26 @@ def load_policy() -> dict[str, Any]:
 def bridge_request(path: str, params: dict[str, Any]) -> Any:
     bridge_url = os.getenv("GOLD_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
     url = f"{bridge_url}{path}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url)
-    secret = os.getenv("GOLD_BRIDGE_SECRET", "").strip()
-    if secret:
-        req.add_header("X-GOLD-BRIDGE-SECRET", secret)
-        req.add_header("X-Gold-Bridge-Secret", secret)
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    last_error: Exception | None = None
+    for secret in [*bridge_secret_candidates(), ""]:
+        req = urllib.request.Request(url)
+        if secret:
+            req.add_header("X-GOLD-BRIDGE-SECRET", secret)
+            req.add_header("X-Gold-Bridge-Secret", secret)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code in {401, 403}:
+                continue
+            raise
+        except Exception as exc:
+            last_error = exc
+            break
+    if last_error:
+        raise last_error
+    raise RuntimeError("bridge request failed")
 
 def fetch_candles(symbol: str, timeframe: str, limit: int = 500) -> list[Candle]:
     def _tf_to_minutes(tf: str | int) -> int:
@@ -323,6 +369,9 @@ def read_spread_points(symbol: str) -> tuple[float | None, str | None]:
         data = load_json(norm, {})
         sp = data.get("spread_points")
         if sp is not None:
+            source = str(data.get("spread_source") or "").strip().lower()
+            if source == "live_tick":
+                return float(sp), "live_tick" if data.get("fresh") else "stale_live_tick"
             src = "normalized market_context_health.json"
             if data.get("fresh"):
                 return float(sp), f"live normalized {src}"
@@ -333,7 +382,7 @@ def read_spread_points(symbol: str) -> tuple[float | None, str | None]:
     bid = tick.get("bid"); ask = tick.get("ask")
     if bid is not None and ask is not None:
         point = float(tick.get("point") or 0.01)
-        return max(0.0, (float(ask) - float(bid)) / point), "live tick bid/ask"
+        return max(0.0, (float(ask) - float(bid)) / point), "live_tick"
     for key in ("spread_points", "spread", "spread_float"):
         if key in tick:
             return float(tick[key]), f"live tick {key}"
@@ -343,7 +392,9 @@ def read_spread_points(symbol: str) -> tuple[float | None, str | None]:
     data = load_json(cache, {})
     if data.get("spread_points") is not None:
         spread_src = str(data.get("spread_source") or "").lower()
-        if "live" in spread_src or spread_src == "mt5_bridge_last_tick":
+        if spread_src == "live_tick" or spread_src == "mt5_bridge_last_tick":
+            return float(data["spread_points"]), "live_tick"
+        if "live" in spread_src:
             return float(data["spread_points"]), "live cached market_health.json"
         return float(data["spread_points"]), "cached market_health.json"
     return None, None
@@ -480,6 +531,7 @@ def build_market_context(symbol: str, policy: dict[str, Any], reads: list[Timefr
         ctx.blockers.append(f"session {ctx.session} not in allowed sessions {sorted(allowed)}")
     spread, spread_src = read_spread_points(symbol)
     ctx.spread_points = spread
+    ctx.spread_source = spread_src or "unknown"
     # Prefer live tick spread for trade-readiness; cached spread allows paper analysis only
     if spread is None:
         msg = "spread unavailable from bridge/cache"
@@ -728,6 +780,8 @@ def main() -> int:
     jp = REPO / policy["operator_updates"]["json_path"]; mp = REPO / policy["operator_updates"]["markdown_path"]
     jp.parent.mkdir(parents=True, exist_ok=True); mp.parent.mkdir(parents=True, exist_ok=True)
     decision_dict = asdict(decision)
+    spread_source = str((decision_dict.get("market_context") or {}).get("spread_source") or "unknown")
+    decision_dict["data_health"] = {"spread": spread_source}
     jp.write_text(json.dumps(decision_dict, indent=2, allow_nan=False)); mp.write_text(decision.operator_message)
     send_operator_alert(policy, decision_dict)
     print(json.dumps(decision_dict, indent=2))

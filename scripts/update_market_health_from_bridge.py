@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,17 +15,69 @@ OUT = ROOT / "logs" / "market_health.json"
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
+
+def bridge_secret_candidates() -> list[str]:
+    candidates: list[str] = []
+
+    def add(value: str) -> None:
+        secret = (value or "").strip()
+        if secret and secret not in candidates:
+            candidates.append(secret)
+
+    env = os.getenv("GOLD_BRIDGE_SECRET", "").strip()
+    add(env)
+
+    secrets_path = ROOT / "config" / "secrets.json"
+    try:
+        if secrets_path.exists():
+            data = json.loads(secrets_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                add(str(data.get("bridge_secret") or ""))
+    except Exception:
+        pass
+
+    cred_path = Path.home() / ".gold-mt5-wine" / "credentials.env"
+    try:
+        if cred_path.exists():
+            for raw in cred_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):]
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key.strip() == "GOLD_BRIDGE_SECRET":
+                    add(value.strip().strip("'\""))
+    except Exception:
+        pass
+    return candidates
+
+
 def request_last_tick() -> dict:
     bridge_url = os.getenv("GOLD_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
-    secret = os.getenv("GOLD_BRIDGE_SECRET", "").strip()
-
-    req = urllib.request.Request(f"{bridge_url}/last-tick")
-    if secret:
-        req.add_header("X-Gold-Bridge-Secret", secret)
-        req.add_header("X-GOLD-BRIDGE-SECRET", secret)
-
-    with urllib.request.urlopen(req, timeout=5) as response:
-        return json.loads(response.read().decode("utf-8"))
+    secrets = bridge_secret_candidates()
+    last_error: Exception | None = None
+    for secret in [*secrets, ""]:
+        req = urllib.request.Request(f"{bridge_url}/last-tick")
+        if secret:
+            req.add_header("X-Gold-Bridge-Secret", secret)
+            req.add_header("X-GOLD-BRIDGE-SECRET", secret)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code in {401, 403}:
+                continue
+            raise
+        except Exception as exc:
+            last_error = exc
+            break
+    if last_error:
+        raise last_error
+    raise RuntimeError("bridge request failed")
 
 def build_health(tick: dict) -> dict:
     bid = float(tick["bid"])
