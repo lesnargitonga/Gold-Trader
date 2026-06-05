@@ -377,12 +377,13 @@ async function refreshPills() {
   try {
     const b = await fetchJSON("/api/bridge/status");
     setBrokerMode(!!b.online);
-    $("#pill-bridge").textContent = b.online ? "broker: live" : "broker: preview";
+    // Use explicit broker label for local authoritative UI
+    $("#pill-bridge").textContent = "Broker: MT5 bridge local · cTrader pending";
     $("#pill-bridge").className = "pill " + (b.online ? "ok" : "warn");
     if (!b.online) return;
   } catch (e) {
     setBrokerMode(false);
-    $("#pill-bridge").textContent = "broker: preview";
+    $("#pill-bridge").textContent = "Broker: MT5 bridge local · cTrader pending";
     $("#pill-bridge").className = "pill warn";
     return;
   }
@@ -578,7 +579,7 @@ async function refreshLiveBanner() {
       updateConnectionCard(true, b.next_action || "");
     } else {
       el.className = "live-banner banner-warn";
-      text.textContent = "Preview mode · chart + IFVG scan active";
+      text.textContent = "Paper mode — live orders locked";
       detail.textContent = "Connect broker below to approve live trades";
       updateConnectionCard(false, b.next_action || "Run ./start from the project folder.");
       if (!bridgeAutoStartDone) autoConnectBroker();
@@ -586,7 +587,7 @@ async function refreshLiveBanner() {
   } catch (e) {
     setBrokerMode(false);
     el.className = "live-banner banner-warn";
-    text.textContent = "Preview mode · broker status unknown";
+    text.textContent = "Paper mode — broker status unknown · live orders locked";
     detail.textContent = "Run ./start from the project folder";
     if (!bridgeAutoStartDone) autoConnectBroker();
   }
@@ -1061,15 +1062,18 @@ async function refreshLiveChart() {
     const cacheParam = LIVE.bridgeOnline ? "" : "&prefer_cache=1";
     const d = await fetchJSON(`/api/live/candles?timeframe=${tf}&count=600${cacheParam}`);
     const bars = d.bars || [];
-    document.getElementById("live-symbol-label").textContent = d.symbol || "XAUUSD";
+    // Normalize and show symbol as XAU/USD
+    const rawSym = d.symbol || "XAUUSD";
+    const sym = (typeof rawSym === "string") ? rawSym.replace(/^([A-Z]{3})([A-Z]{3})$/, '$1/$2') : rawSym;
+    document.getElementById("live-symbol-label").textContent = `Symbol: ${sym}`;
     if (!bars.length) {
       meta.textContent = `no data (${d.source}${d.error ? " · " + d.error : ""})`;
       if (LIVE.chart && LIVE.candleSeries) LIVE.candleSeries.setData([]);
       return;
     }
-    const tag = d.source === "bridge" ? "LIVE" : (d.source === "csv_fallback" ? "CACHED" : d.source);
+    const dataLabel = d.source === "bridge" ? "MT5 bridge live" : (d.source === "twelvedata" ? "TwelveData fallback" : (d.source === "csv_fallback" ? "cached" : (d.source || "unknown")));
     const age = d.age_sec != null ? ` · last bar ${fmtBarAge(d.age_sec)}` : "";
-    meta.textContent = `${tag} · ${bars.length} bars · TF ${tf}m${age}`;
+    meta.textContent = `Data: ${dataLabel} · ${bars.length} bars · TF ${tf}m${age}`;
     renderLiveChart(bars, document.getElementById("live-ind-ema").checked);
   } catch (e) {
     meta.textContent = "error: " + e.message;
@@ -1393,7 +1397,13 @@ async function refreshIFVGAssistant() {
   try {
     const d = await fetchJSON(`/api/live/scout?timeframe=${LIVE.tf}`);
     updateScoutBanner(d);
-    const scoutTag = `<div class="scout-status muted small">AI auto-watch · ${escapeHTML(scoutStatusLabel(d.status))} · ${d.source === "bridge" ? "live MT5" : (d.source || "data")}${d.last_scan_at ? ` · scanned ${fmtBarAge((Date.now() - new Date(d.last_scan_at).getTime()) / 1000)}` : ""}</div>`;
+    let scannedText = "";
+    if (d.last_scan_at) {
+      const ageSec = (Date.now() - new Date(d.last_scan_at).getTime()) / 1000;
+      scannedText = ageSec > 300 ? " · Decision stale — run full-system scan" : ` · scanned ${fmtBarAge(ageSec)}`;
+    }
+    const scoutSource = d.source === "bridge" ? "live MT5" : (d.source || "data");
+    const scoutTag = `<div class="scout-status muted small">AI auto-watch · ${escapeHTML(scoutStatusLabel(d.status))} · ${scoutSource}${scannedText}</div>`;
     const brief = d.approval_brief || {};
     const s = d.setup;
     if (!s) {

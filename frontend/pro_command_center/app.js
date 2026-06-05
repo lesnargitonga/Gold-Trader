@@ -72,7 +72,8 @@
     const [page, setPage] = useState("Trade Cockpit");
     const [decision, setDecision] = useState(null);
     const [candles, setCandles] = useState([]);
-    const [tf, setTf] = useState("M15");
+      // Deprecated: not the active local command center. Use src/gold_trader/web/static/index.html
+      const [tf, setTf] = useState("M15");
     const [alerts, setAlerts] = useState([]);
     const [err, setErr] = useState("");
     const canvas = useRef(null);

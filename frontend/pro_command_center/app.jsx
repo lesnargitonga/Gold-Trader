@@ -1,3 +1,5 @@
+// Deprecated: not the active local command center.
+// Official UI: src/gold_trader/web/static/index.html
 const {useEffect,useRef,useState}=React;
 const TFS=['D1','H4','H1','M30','M15','M5','M1'];
 const pages=['Trade Cockpit','Market Context','Signal Engine','Risk & Orders','Journal','Settings','Decision JSON'];

@@ -41,6 +41,11 @@
 </aside>
 
 <header class="topbar">
+  <div id="mode-marker" class="mode-marker">
+    <strong>LOCAL AUTHORITATIVE MODE</strong><br>
+    MT5 bridge source · TwelveData fallback<br>
+    <span class="muted small">Live orders locked</span>
+  </div>
   <div id="live-banner" class="live-banner banner-unknown">
     <span class="banner-dot"></span>
     <span id="banner-text">Checking connection…</span>
@@ -102,7 +107,7 @@
     <div class="trade-main">
       <div class="card chart-card">
         <div class="chart-toolbar">
-          <strong id="live-symbol-label">XAUUSD</strong>
+          <strong id="live-symbol-label">Symbol: XAU/USD</strong>
           <div class="tf-pills" id="live-tf-pills">
             <button data-tf="1">M1</button>
             <button data-tf="5">M5</button>

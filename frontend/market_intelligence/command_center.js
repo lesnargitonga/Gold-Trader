@@ -1,4 +1,6 @@
 (function () {
+  // Deprecated: not the active local command center.
+  // Official UI: src/gold_trader/web/static/index.html
   "use strict";
 
   var TFs = ["D1", "H4", "H1", "M30", "M15", "M5", "M1"];

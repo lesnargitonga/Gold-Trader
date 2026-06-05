@@ -1,3 +1,4 @@
+// Deprecated: not the active local command center. Use src/gold_trader/web/static/index.html
 const e=React.createElement;const TFS=['D1','H4','H1','M30','M15','M5','M1'];const NAV=['Trade Cockpit','Market Context','Signal Engine','Risk & Orders','Journal','Settings','Decision JSON'];
 function fmt(v){return v===null||v===undefined||Number.isNaN(v)?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:2})}
 function clsAge(age){if(age===null||age===undefined)return 'red'; if(age<60)return ''; if(age<120)return 'amber'; return 'red'}
