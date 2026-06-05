@@ -155,7 +155,23 @@ def bridge_request(path: str, params: dict[str, Any]) -> Any:
         return json.loads(resp.read().decode("utf-8"))
 
 def fetch_candles(symbol: str, timeframe: str, limit: int = 500) -> list[Candle]:
-    rows = bridge_request("/candles", {"symbol": symbol, "timeframe": timeframe, "limit": limit})
+    def _tf_to_minutes(tf: str | int) -> int:
+        try:
+            if isinstance(tf, int):
+                return int(tf)
+            s = str(tf).upper().strip()
+            if s.startswith("M") and s[1:].isdigit():
+                return int(s[1:])
+            if s.startswith("H") and s[1:].isdigit():
+                return int(s[1:]) * 60
+            if s.startswith("D") and s[1:].isdigit():
+                return int(s[1:]) * 1440
+            return int(s)
+        except Exception:
+            return 15
+
+    tf_minutes = _tf_to_minutes(timeframe)
+    rows = bridge_request("/candles", {"symbol": symbol, "timeframe": tf_minutes, "limit": limit})
     return [Candle(str(r.get("time") or r.get("timestamp") or ""), float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]), float(r.get("volume", 0) or 0)) for r in rows][-limit:]
 
 def read_csv_fallback(symbol: str, timeframe: str, limit: int = 500) -> list[Candle]:
@@ -304,6 +320,11 @@ def read_spread_points(symbol: str) -> tuple[float | None, str | None]:
     cache = REPO / "logs" / "market_health.json"
     data = load_json(cache, {})
     if data.get("spread_points") is not None:
+        # If the cached health was written by the bridge updater and marks the
+        # spread as originating from a live tick, treat it as live for gating.
+        spread_src = str(data.get("spread_source") or "").lower()
+        if "live" in spread_src or spread_src == "mt5_bridge_last_tick":
+            return float(data["spread_points"]), "live cached market_health.json"
         return float(data["spread_points"]), "cached market_health.json"
     return None, None
 
@@ -354,6 +375,23 @@ def macro_filter(policy: dict[str, Any]) -> tuple[str, list[str], list[str]]:
     before = int(policy["market_filters"].get("block_high_impact_macro_minutes_before", 45))
     after = int(policy["market_filters"].get("block_high_impact_macro_minutes_after", 30))
     now = datetime.now(timezone.utc)
+    # Prefer explicit macro state files that include top-level metadata: {state, updated_at, source}
+    state_candidates = [REPO / "data" / "macro" / "economic_calendar.json", REPO / "logs" / "economic_calendar.json"]
+    max_age = int(policy["market_filters"].get("macro_state_max_age_minutes", 180))
+    for path in state_candidates:
+        data = load_json(path, None)
+        if isinstance(data, dict) and data.get("state"):
+            updated = parse_event_time(str(data.get("updated_at") or ""))
+            if not updated and path.exists():
+                try:
+                    updated = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                except Exception:
+                    updated = None
+            age_mins = (now - updated).total_seconds() / 60.0 if updated else None
+            if age_mins is None or age_mins > max_age:
+                return "unknown", ["macro calendar stale or missing updated_at"], [f"{path.relative_to(REPO)} stale"]
+            return str(data.get("state") or "unknown"), [], [f"macro state loaded from {path.relative_to(REPO)}"]
+
     events = load_macro_events()
     if not events:
         return "unknown", [], ["economic calendar unavailable; add data/macro/economic_calendar.json or CSV"]
@@ -372,13 +410,40 @@ def macro_filter(policy: dict[str, Any]) -> tuple[str, list[str], list[str]]:
             notes.append(f"nearby high-impact event: {name} at {dt.isoformat()}")
     return ("blocked" if blockers else "clear"), blockers, notes
 
-def load_sentiment_state() -> tuple[float | None, str, list[str]]:
+def load_sentiment_state(policy: dict[str, Any]) -> tuple[float | None, str, list[str]]:
     candidates = [REPO / "logs" / "sentiment_state.json", REPO / "data" / "sentiment" / "news_sentiment.json", REPO / "logs" / "news_sentiment.json"]
     notes: list[str] = []
+    max_age = int(policy.get("market_filters", {}).get("sentiment_state_max_age_minutes", 60))
+    now = datetime.now(timezone.utc)
     for path in candidates:
         data = load_json(path, None)
         if not isinstance(data, dict):
             continue
+        # If file uses explicit state metadata
+        if data.get("state") is not None:
+            updated = parse_event_time(str(data.get("updated_at") or ""))
+            if not updated and path.exists():
+                try:
+                    updated = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                except Exception:
+                    updated = None
+            age = (now - updated).total_seconds() / 60.0 if updated else None
+            if age is None or age > max_age:
+                notes.append(f"sentiment file {path.relative_to(REPO)} stale or missing updated_at")
+                continue
+            # Prefer explicit score when available
+            for key in ("gold_score", "xauusd_score", "score", "sentiment_score"):
+                if data.get(key) is not None:
+                    score = max(-1.0, min(1.0, float(data[key])))
+                    state = "bullish" if score > 0.15 else "bearish" if score < -0.15 else "neutral"
+                    notes.append(f"sentiment loaded from {path.relative_to(REPO)}")
+                    return score, state, notes
+            # If no explicit numeric score, map state string
+            st = str(data.get("state") or "unknown").lower()
+            state = "bullish" if "bull" in st else "bearish" if "bear" in st else "neutral"
+            notes.append(f"sentiment state loaded from {path.relative_to(REPO)}")
+            return None, state, notes
+        # Fallback: older-style JSON with score fields
         for key in ("gold_score", "xauusd_score", "score", "sentiment_score"):
             if data.get(key) is not None:
                 score = max(-1.0, min(1.0, float(data[key])))
@@ -395,13 +460,22 @@ def build_market_context(symbol: str, policy: dict[str, Any], reads: list[Timefr
         ctx.blockers.append(f"session {ctx.session} not in allowed sessions {sorted(allowed)}")
     spread, spread_src = read_spread_points(symbol)
     ctx.spread_points = spread
+    # Prefer live tick spread for trade-readiness; cached spread allows paper analysis only
     if spread is None:
         msg = "spread unavailable from bridge/cache"
         (ctx.blockers if mf.get("block_if_context_unavailable") else ctx.warnings).append(msg)
-    elif spread > float(mf.get("max_spread_points", 55)):
-        ctx.blockers.append(f"spread too wide: {spread:.1f} points")
     else:
-        ctx.notes.append(f"spread ok: {spread:.1f} points via {spread_src}")
+        # Exceeds max spread
+        if spread > float(mf.get("max_spread_points", 55)):
+            ctx.blockers.append(f"spread too wide: {spread:.1f} points")
+        else:
+            ctx.notes.append(f"spread ok: {spread:.1f} points via {spread_src}")
+        # If spread is present but not sourced from a live tick, optionally block live trade-readiness
+        if spread_src is None or not str(spread_src).lower().startswith("live"):
+            if mf.get("require_live_spread_for_trade", True):
+                ctx.blockers.append("live tick spread unavailable; live trade not allowed")
+            else:
+                ctx.warnings.append(f"spread only available via {spread_src}; live tick preferred")
     ctx.volatility_state, vol_notes = volatility_state(symbol, reads)
     ctx.notes.extend(vol_notes)
     if ctx.volatility_state in {"extreme", "dead"}:
@@ -410,7 +484,7 @@ def build_market_context(symbol: str, policy: dict[str, Any], reads: list[Timefr
     ctx.blockers.extend(macro_blockers); ctx.notes.extend(macro_notes)
     if ctx.macro_state == "unknown" and mf.get("block_if_context_unavailable"):
         ctx.blockers.append("macro calendar unavailable")
-    score, sent_state, sent_notes = load_sentiment_state()
+    score, sent_state, sent_notes = load_sentiment_state(policy)
     ctx.sentiment_score = score; ctx.sentiment_state = sent_state; ctx.notes.extend(sent_notes)
     if score is None and mf.get("block_if_context_unavailable"):
         ctx.blockers.append("sentiment unavailable")
@@ -558,9 +632,17 @@ def decide(policy, reads, guard):
     min_aligned = int(policy["confirmation_rules"].get("minimum_aligned_timeframes", 5))
     if aligned < min_aligned: blockers.append(f"only {aligned}/{len(usable)} timeframes align; need at least {min_aligned}")
     if side != "none":
-        if not any(r.ifvg_side == side for r in usable): blockers.append("no IFVG confirms selected side")
-        if not any(r.ifvg_side == side and r.timeframe in entry_names for r in usable): blockers.append("entry timeframe does not confirm IFVG")
-        if not any((r.displacement or r.liquidity_sweep) and (r.ifvg_side == side or side_from_bias(r.bias)==side) for r in usable): blockers.append("no aligned liquidity sweep or displacement")
+        # Confirmation requirement flags can be controlled via policy.confirmation_rules
+        req_ifvg = bool(policy.get("confirmation_rules", {}).get("require_ifvg_confirm", True))
+        req_entry_ifvg = bool(policy.get("confirmation_rules", {}).get("require_entry_ifvg", True))
+        req_aligned_sweep = bool(policy.get("confirmation_rules", {}).get("require_aligned_sweep", True))
+
+        if req_ifvg and not any(r.ifvg_side == side for r in usable):
+            blockers.append("no IFVG confirms selected side")
+        if req_entry_ifvg and not any(r.ifvg_side == side and r.timeframe in entry_names for r in usable):
+            blockers.append("entry timeframe does not confirm IFVG")
+        if req_aligned_sweep and not any((r.displacement or r.liquidity_sweep) and (r.ifvg_side == side or side_from_bias(r.bias)==side) for r in usable):
+            blockers.append("no aligned liquidity sweep or displacement")
     el, eh, stop, tp1, tp2, tp3, rr1, rr2 = geometry(side, usable)
     if rr1 is not None and rr1 < float(policy["minimum_rr_to_tp1"]): blockers.append("TP1 reward/risk below policy")
     if rr2 is not None and rr2 < float(policy["minimum_rr_to_tp2"]): blockers.append("TP2 reward/risk below policy")
