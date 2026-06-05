@@ -1853,6 +1853,46 @@ def _api_replay(query: dict[str, list[str]]) -> dict[str, Any]:
     }
 
 
+# ---------- Decision journal / paper signals / performance -----------------
+
+def _read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    lines = _tail(path, limit)
+    out: list[dict[str, Any]] = []
+    for ln in lines:
+        try:
+            out.append(json.loads(ln))
+        except Exception:
+            # skip malformed lines
+            continue
+    return out
+
+
+def _api_performance() -> dict[str, Any]:
+    p = LOGS_DIR / "paper_performance_report.json"
+    if not p.exists():
+        return {"error": "missing report"}
+    try:
+        return json.loads(p.read_text())
+    except Exception as exc:
+        return {"error": f"invalid report: {exc}"}
+
+
+def _api_paper_signals(query: dict[str, list[str]]) -> dict[str, Any]:
+    limit = int((query.get("limit") or ["50"])[0])
+    p = LOGS_DIR / "paper_signal_outcomes.jsonl"
+    rows = _read_jsonl_tail(p, limit)
+    return {"rows": rows, "count": len(rows)}
+
+
+def _api_decision_journal(query: dict[str, list[str]]) -> dict[str, Any]:
+    limit = int((query.get("limit") or ["50"])[0])
+    p = LOGS_DIR / "decision_journal.jsonl"
+    rows = _read_jsonl_tail(p, limit)
+    return {"rows": rows, "count": len(rows)}
+
+
 # ---------- HTTP handler ---------------------------------------------------
 
 
@@ -1997,6 +2037,15 @@ class GoldTraderHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/replay":
                 self._send_json(_api_replay(query))
+                return
+            if path == "/api/performance":
+                self._send_json(_api_performance())
+                return
+            if path == "/api/paper-signals":
+                self._send_json(_api_paper_signals(query))
+                return
+            if path in ("/api/decision-journal", "/api/decision_journal"):
+                self._send_json(_api_decision_journal(query))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:  # noqa: BLE001

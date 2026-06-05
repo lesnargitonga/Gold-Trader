@@ -312,6 +312,7 @@ const TAB_LOADERS = {
   miner: loadMiner,
   macro: loadMacro,
   journal: loadJournal,
+  performance: loadPerformance,
   risk: loadRisk,
   replay: loadReplay,
   logs: loadLogs,
@@ -1987,6 +1988,50 @@ async function loadJournalBuckets() {
     html += `</div>`;
   }
   $("#journal-buckets").innerHTML = html || "<div class='muted'>no buckets</div>";
+}
+
+// ---------- Performance --------------------------------------------------
+
+async function loadPerformance() {
+  if (!TAB_INIT.has("performance")) {
+    TAB_INIT.add("performance");
+  }
+  let p = {};
+  try { p = await fetchJSON("/api/performance"); } catch (e) { p = {}; }
+  let s = { rows: [] };
+  try { s = await fetchJSON("/api/paper-signals?limit=20"); } catch (e) { s = { rows: [] }; }
+
+  // metrics
+  if (!p || p.error) {
+    $("#perf-metrics").innerHTML = '<div class="muted">No performance data yet.</div>';
+  } else {
+    const html = `
+      <div><span>Total signals</span><b>${p.total_signals||0}</b></div>
+      <div><span>Open signals</span><b>${p.open_signals||0}</b></div>
+      <div><span>Closed signals</span><b>${p.closed_signals||0}</b></div>
+      <div><span>TP1 hit rate</span><b>${(p.tp1_hit_rate||0).toFixed(1)}%</b></div>
+      <div><span>TP2 hit rate</span><b>${(p.tp2_hit_rate||0).toFixed(1)}%</b></div>
+      <div><span>TP3 hit rate</span><b>${(p.tp3_hit_rate||0).toFixed(1)}%</b></div>
+      <div><span>SL hit rate</span><b>${(p.sl_hit_rate||0).toFixed(1)}%</b></div>
+      <div><span>Avg MFE R</span><b>${(p.average_max_favorable_r||0).toFixed(3)}</b></div>
+      <div><span>Avg MAE R</span><b>${(p.average_max_adverse_r||0).toFixed(3)}</b></div>
+      <div><span>Expectancy</span><b>${(p.expectancy_r||0).toFixed(3)}</b></div>
+    `;
+    $("#perf-metrics").innerHTML = html;
+  }
+
+  // latest signals
+  const rows = (s && s.rows) || [];
+  if (!rows.length) {
+    $("#perf-signals").innerHTML = '<div class="muted">No paper signals yet.</div>';
+  } else {
+    let html = '<table><thead><tr><th>Time</th><th>Action</th><th>Grade</th><th>Score</th><th>Side</th><th>Price</th><th>Status</th></tr></thead><tbody>';
+    rows.slice().reverse().forEach((r) => {
+      html += `<tr><td>${escapeHTML(r.opened_at||r.timestamp_utc||'')}</td><td>${escapeHTML(r.action||'')}</td><td>${escapeHTML(r.grade||'')}</td><td class="num ${classOfR(r.realised_r||r.score)}">${escapeHTML(String(r.score||r.realised_r||''))}</td><td>${escapeHTML(r.side||'')}</td><td>${escapeHTML(String(r.entry||r.current_price||''))}</td><td>${escapeHTML(r.status||r.exit_reason||'')}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    $("#perf-signals").innerHTML = html;
+  }
 }
 
 // ---------- Risk --------------------------------------------------------

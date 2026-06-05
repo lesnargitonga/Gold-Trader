@@ -24,7 +24,8 @@
       <button data-tab="dashboard">Dashboard</button>
       <button data-tab="charts">Charts</button>
       <button data-tab="bridge">MT5 Bridge</button>
-      <button data-tab="journal">Journal</button>
+    <button data-tab="journal">Journal</button>
+    <button data-tab="performance">Performance</button>
       <button data-tab="risk">Risk</button>
       <button data-tab="logs">Logs</button>
       <button data-tab="lab">Strategy Lab</button>
@@ -77,6 +78,20 @@
     <div>
       <h3>Run log</h3>
       <div id="cycle-run-output" class="logbox compact-cycle-log"></div>
+    </div>
+  </div>
+</section>
+
+<!-- PERFORMANCE -->
+<section class="tab hidden" id="tab-performance">
+  <div class="grid-2">
+    <div class="card">
+      <h2>Paper Performance</h2>
+      <div id="perf-metrics" class="kv-grid muted">Loading…</div>
+    </div>
+    <div class="card">
+      <h2>Latest Paper Signals</h2>
+      <div id="perf-signals" class="table-wrap muted">Loading…</div>
     </div>
   </div>
 </section>
