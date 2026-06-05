@@ -119,6 +119,55 @@ def read_alerts(limit: int = 20) -> list[dict[str, Any]]:
     return out[::-1]
 
 
+def read_decision_journal(limit: int = 20) -> dict[str, Any]:
+    path = LOG_DIR / "decision_journal.jsonl"
+    if not path.exists():
+        return {"count": 0, "rows": []}
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()[-limit:]
+        for line in lines:
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    rows.append(obj)
+            except Exception:
+                continue
+    except Exception:
+        return {"count": 0, "rows": []}
+    # newest first
+    return {"count": len(rows), "rows": list(reversed(rows))}
+
+
+def read_paper_signals(limit: int = 20) -> dict[str, Any]:
+    path = LOG_DIR / "paper_signal_outcomes.jsonl"
+    if not path.exists():
+        return {"count": 0, "rows": []}
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()[-limit:]
+        for line in lines:
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    rows.append(obj)
+            except Exception:
+                continue
+    except Exception:
+        return {"count": 0, "rows": []}
+    return {"count": len(rows), "rows": list(reversed(rows))}
+
+
+def read_performance_report() -> dict[str, Any]:
+    path = LOG_DIR / "paper_performance_report.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def fetch_twelvedata_candles(tf: str, outputsize: int = 160) -> list[dict[str, Any]]:
     key = os.getenv("TWELVE_DATA_API_KEY", "").strip()
     if not key:
@@ -187,6 +236,43 @@ INDEX_HTML = r'''<!doctype html>
 <script>
 const $=id=>document.getElementById(id);const fmt=v=>{if(v===null||v===undefined||Number.isNaN(Number(v)))return '—';return Number(v).toLocaleString(undefined,{maximumFractionDigits:2,minimumFractionDigits:2})};function li(items,el,empty='None'){el.innerHTML='';(items&&items.length?items:[empty]).forEach(x=>{const n=document.createElement('li');n.textContent=x;el.appendChild(n)})}function ctx(label,value,klass=''){return `<div class="ctx"><span>${label}</span><b class="${klass}">${value??'—'}</b></div>`}function setDecision(d){const action=(d.action||'WAIT').toUpperCase();$('action').textContent=action;$('action').className='action '+action;$('symbol').textContent=d.symbol||'XAU/USD';$('side').textContent=d.side||'none';$('grade').textContent=d.final_grade||'—';let score=Math.max(0,Math.min(100,Number(d.final_score||0)));$('score').textContent=score;$('scoreRing').style.setProperty('--score',score);$('price').textContent=fmt(d.current_price);$('entry').textContent=(d.entry_low||d.entry_high)?`${fmt(d.entry_low)} – ${fmt(d.entry_high)}`:'—';$('stop').textContent=fmt(d.stop_loss);$('targets').textContent=[d.tp1,d.tp2,d.tp3].map(fmt).join(' / ');$('timestamp').textContent=d.timestamp_utc||'—';$('nextUpdate').textContent=d.next_update||'Waiting for scan.';li(d.reasons,$('reasons'));li(d.blockers,$('blockers'),'No blockers');const cs=d.cloud_status||{};$('dataProvider').textContent=cs.data_provider||'—';$('mode').textContent=cs.execution_mode||'paper';$('orders').textContent=cs.orders||'locked';$('footTime').textContent=new Date().toISOString().slice(0,19)+'Z';const market=d.market_context||{};$('context').innerHTML=ctx('Analysis',cs.analysis,cs.analysis==='online'?'good':'warn')+ctx('Candles',cs.candles_loaded||0)+ctx('Volatility',market.volatility_state||'unknown')+ctx('Spread',market.spread_points??'unknown')+ctx('Macro',market.macro_state||'unknown')+ctx('Sentiment',market.sentiment_state||'unknown')+ctx('Broker',cs.broker||'preview')+ctx('Orders',cs.orders||'locked',cs.orders==='locked'?'warn':'good');const g=d.daily_guard||{};$('guard').innerHTML=ctx('Trades today',g.trades_taken??0)+ctx('Losses today',g.losses_taken??0)+ctx('Open positions',g.open_positions??0)+ctx('Blocked',g.blocked?'yes':'no',g.blocked?'bad':'good');renderTF(d.timeframe_reads||[])}function renderTF(reads){const by={};reads.forEach(r=>by[r.timeframe]=r);let aligned=0,total=0;const html=['D1','H4','H1','M30','M15','M5','M1'].map(tf=>{const r=by[tf]||{};const side=(r.ifvg_side||'none').toLowerCase();if(r.candles>0) total++;if(side==='buy'||side==='sell') aligned++;return `<div class="tf ${side}"><div class="name">${tf}</div><div class="bias">${r.bias||'unknown'}</div><div class="bias">IFVG: ${r.ifvg_side||'none'}</div><div class="bias">Candles: ${r.candles||0}</div><div class="bias">Score: ${r.score||0}</div></div>`}).join('');$('tfgrid').innerHTML=html;$('alignText').textContent=`${aligned}/${total} active IFVG reads`}function draw(c){const canvas=$('chart'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);if(!c||!c.length){$('chartEmpty').style.display='grid';return}$('chartEmpty').style.display='none';const pad=36;const highs=c.map(x=>x.high),lows=c.map(x=>x.low);const max=Math.max(...highs),min=Math.min(...lows);const xstep=(w-pad*2)/c.length;const y=v=>h-pad-((v-min)/(max-min||1))*(h-pad*2);ctx.strokeStyle='rgba(255,255,255,.08)';ctx.lineWidth=1;for(let i=0;i<6;i++){let yy=pad+i*(h-pad*2)/5;ctx.beginPath();ctx.moveTo(pad,yy);ctx.lineTo(w-pad,yy);ctx.stroke()}c.forEach((k,i)=>{const x=pad+i*xstep+xstep/2;const up=k.close>=k.open;ctx.strokeStyle=up?'#2ee58b':'#ff5a66';ctx.fillStyle=up?'rgba(46,229,139,.72)':'rgba(255,90,102,.72)';ctx.beginPath();ctx.moveTo(x,y(k.high));ctx.lineTo(x,y(k.low));ctx.stroke();const top=Math.min(y(k.open),y(k.close)),bot=Math.max(y(k.open),y(k.close));ctx.fillRect(x-xstep*.28,top,Math.max(2,xstep*.56),Math.max(2,bot-top))})}async function loadAll(){try{const d=await fetch('/api/decision',{cache:'no-store'}).then(r=>r.json());setDecision(d)}catch(e){}try{const c=await fetch('/api/candles?tf=M15',{cache:'no-store'}).then(r=>r.json());draw(c.candles||[])}catch(e){draw([])}}loadAll();setInterval(loadAll,30000);
 </script>
+<script>
+// Lightweight journal & performance UI injected after the main script.
+async function loadJournal(){
+    try{const j=await fetch('/api/journal?limit=20',{cache:'no-store'}).then(r=>r.json());renderJournal(j);}catch(e){renderJournal({count:0,rows:[]});}
+}
+function renderJournal(j){
+    let main = document.querySelector('.main');
+    if(!main) return;
+    let container = document.getElementById('journalPanel');
+    if(!container){container=document.createElement('div');container.id='journalPanel';container.className='card';main.appendChild(container)}
+    let html = '<div class="card-h"><h3>Decision Journal</h3></div><div class="card-b">';
+    if(!j.rows||!j.rows.length){html += '<div class="muted">No paper signals recorded yet.</div>'} else {html += '<div style="overflow:auto"><table style="width:100%;font-size:13px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:6px">Time</th><th style="padding:6px">Action</th><th style="padding:6px">Grade</th><th style="padding:6px">Score</th><th style="padding:6px">Side</th><th style="padding:6px">Price</th><th style="padding:6px">Macro</th><th style="padding:6px">Sentiment</th><th style="padding:6px">Spread</th><th style="padding:6px">Blockers</th></tr></thead><tbody>';
+    j.rows.forEach(function(r){html += '<tr style="border-top:1px solid rgba(255,255,255,.03)">';html += '<td style="padding:6px">'+(r.timestamp_utc||'')+'</td>';html += '<td style="padding:6px">'+(r.action||'')+'</td>';html += '<td style="padding:6px">'+(r.grade||'')+'</td>';html += '<td style="padding:6px">'+(r.score||'')+'</td>';html += '<td style="padding:6px">'+(r.side||'')+'</td>';html += '<td style="padding:6px">'+(r.current_price!=null?r.current_price:'')+'</td>';html += '<td style="padding:6px">'+(r.macro_state||'')+'</td>';html += '<td style="padding:6px">'+(r.sentiment_state||'')+'</td>';html += '<td style="padding:6px">'+(r.spread_points!=null?r.spread_points:'')+'</td>';html += '<td style="padding:6px">'+((r.blockers&&r.blockers.length)?r.blockers.join('; '):'')+'</td>';html += '</tr>'});html += '</tbody></table></div>'}
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+async function loadPerformance(){
+    try{const p=await fetch('/api/performance',{cache:'no-store'}).then(r=>r.json());renderPerformance(p);}catch(e){renderPerformance({});}
+}
+function renderPerformance(p){
+    let main = document.querySelector('.main');
+    if(!main) return;
+    let container = document.getElementById('performancePanel');
+    if(!container){container=document.createElement('div');container.id='performancePanel';container.className='card';main.appendChild(container)}
+    let html = '<div class="card-h"><h3>Paper Performance</h3></div><div class="card-b">';
+    if(!p || !p.timestamp_utc){html += '<div class="muted">No performance data yet.</div>'} else {html += '<div class="metrics">';html += '<div>Total signals: <b>' + (p.total_signals||0) + '</b></div>';html += '<div>Open signals: <b>' + (p.open_signals||0) + '</b></div>';html += '<div>Closed signals: <b>' + (p.closed_signals||0) + '</b></div>';html += '<div>TP1 hit rate: <b>' + ((p.tp1_hit_rate||0).toFixed? (p.tp1_hit_rate).toFixed(1) : (p.tp1_hit_rate||0)) + '%</b></div>';html += '<div>TP2 hit rate: <b>' + ((p.tp2_hit_rate||0).toFixed? (p.tp2_hit_rate).toFixed(1) : (p.tp2_hit_rate||0)) + '%</b></div>';html += '<div>TP3 hit rate: <b>' + ((p.tp3_hit_rate||0).toFixed? (p.tp3_hit_rate).toFixed(1) : (p.tp3_hit_rate||0)) + '%</b></div>';html += '<div>SL hit rate: <b>' + ((p.sl_hit_rate||0).toFixed? (p.sl_hit_rate).toFixed(1) : (p.sl_hit_rate||0)) + '%</b></div>';html += '<div>Avg MFE R: <b>' + ((p.average_max_favorable_r||0).toFixed? (p.average_max_favorable_r).toFixed(3) : (p.average_max_favorable_r||0)) + '</b></div>';html += '<div>Avg MAE R: <b>' + ((p.average_max_adverse_r||0).toFixed? (p.average_max_adverse_r).toFixed(3) : (p.average_max_adverse_r||0)) + '</b></div>';html += '<div>Expectancy R: <b>' + ((p.expectancy_r||0).toFixed? (p.expectancy_r).toFixed(3) : (p.expectancy_r||0)) + '</b></div>';html += '</div>'}
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+// trigger initial loads and periodic refreshes
+try{loadAll();}catch(e){}try{loadJournal();}catch(e){}try{loadPerformance();}catch(e){}
+setInterval(function(){try{loadAll()}catch(e){}},30000);
+setInterval(function(){try{loadJournal()}catch(e){}},60000);
+setInterval(function(){try{loadPerformance()}catch(e){}},60000);
+</script>
 </body></html>'''
 
 
@@ -217,6 +303,25 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(parsed.query)
             tf = (query.get("tf") or ["M15"])[0]
             json_response(self, {"timeframe": tf, "candles": fetch_twelvedata_candles(tf)})
+            return
+        if parsed.path == "/api/journal":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = int((query.get("limit") or ["20"])[0])
+            except Exception:
+                limit = 20
+            json_response(self, read_decision_journal(limit))
+            return
+        if parsed.path == "/api/paper-signals":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = int((query.get("limit") or ["20"])[0])
+            except Exception:
+                limit = 20
+            json_response(self, read_paper_signals(limit))
+            return
+        if parsed.path == "/api/performance":
+            json_response(self, read_performance_report())
             return
         if parsed.path == "/health":
             d = decision_state()
