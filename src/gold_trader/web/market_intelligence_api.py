@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import urllib.parse
 from datetime import datetime, timezone
@@ -19,6 +20,30 @@ from gold_trader.core.market_intelligence_ux import (
 _PKG_ROOT = Path(__file__).resolve().parents[3]
 ROOT = Path(os.getenv("GOLD_TRADER_ROOT", os.getenv("GOLD_RUNTIME_ROOT", str(_PKG_ROOT)))).resolve()
 COMMAND_CENTER_JS = _PKG_ROOT / "frontend" / "market_intelligence" / "command_center.js"
+CLOUD_STATE_DIR = ROOT / "data" / "cloud_state"
+LATEST_CLOUD_STATE = CLOUD_STATE_DIR / "latest_cloud_state.json"
+SYNC_TOKEN_HEADER = "X-Gold-Sync-Token"
+try:
+    CLOUD_STATE_MAX_AGE_SECONDS = max(1, int(os.getenv("GOLD_CLOUD_STATE_MAX_AGE_SECONDS", "300")))
+except ValueError:
+    CLOUD_STATE_MAX_AGE_SECONDS = 300
+
+EMPTY_PERFORMANCE: dict[str, Any] = {
+    "total_signals": 0,
+    "open_signals": 0,
+    "closed_signals": 0,
+    "tp1_hits": 0,
+    "tp2_hits": 0,
+    "tp3_hits": 0,
+    "sl_hits": 0,
+    "tp1_hit_rate": 0.0,
+    "tp2_hit_rate": 0.0,
+    "tp3_hit_rate": 0.0,
+    "sl_hit_rate": 0.0,
+    "average_max_favorable_r": 0.0,
+    "average_max_adverse_r": 0.0,
+    "expectancy_r": 0.0,
+}
 
 
 def _base_candidates() -> list[Path]:
@@ -108,7 +133,66 @@ INDEX = r'''<!doctype html>
 
 
 def _safe_json(obj: Any) -> bytes:
-    return json.dumps(obj, allow_nan=False, indent=2).encode("utf-8")
+    return json.dumps(_json_safe_value(obj), allow_nan=False, indent=2).encode("utf-8")
+
+
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(v) for v in value]
+    return value
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    safe = _json_safe_value(payload)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(safe, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _write_jsonl(path: Path, rows: list[Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            if isinstance(row, dict):
+                fh.write(json.dumps(_json_safe_value(row), ensure_ascii=False, allow_nan=False) + "\n")
+    tmp.replace(path)
+
+
+def _read_jsonl(path: Path, limit: int = 50) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines[-max(1, min(int(limit), 500)):]:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            rows.append(_json_safe_value(payload))
+    return list(reversed(rows))
+
+
+def _rel_source(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 def _candles(tf: str, count: int | None = None) -> dict[str, Any]:
@@ -429,7 +513,230 @@ def _parse_snapshot_time(value: Any) -> datetime | None:
         return None
 
 
-def _journal_payload(limit: int = 20) -> dict[str, Any]:
+def _cloud_bundle() -> dict[str, Any]:
+    data = read_json(LATEST_CLOUD_STATE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def _cloud_bundle_path() -> Path | None:
+    return LATEST_CLOUD_STATE if LATEST_CLOUD_STATE.exists() else None
+
+
+def _bundle_published_at(bundle: dict[str, Any]) -> datetime | None:
+    for value in (
+        bundle.get("published_at"),
+        bundle.get("generated_at"),
+        bundle.get("updated_at"),
+        (bundle.get("decision") or {}).get("timestamp_utc") if isinstance(bundle.get("decision"), dict) else None,
+    ):
+        parsed = _parse_snapshot_time(value)
+        if parsed:
+            return parsed
+    return None
+
+
+def _cloud_sync_meta(bundle: dict[str, Any] | None = None, *, fallback_path: Path | None = None) -> dict[str, Any]:
+    bundle = bundle if isinstance(bundle, dict) else {}
+    path = _cloud_bundle_path() or fallback_path
+    published = _bundle_published_at(bundle)
+    if published is None and path and path.exists():
+        try:
+            published = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        except OSError:
+            published = None
+    if published is None:
+        return {
+            "state": "missing",
+            "fresh": False,
+            "published_at": None,
+            "age_seconds": None,
+            "source": "cloud_state_missing",
+            "message": "Cloud state missing - local engine has not synced yet",
+            "max_age_seconds": CLOUD_STATE_MAX_AGE_SECONDS,
+        }
+    age = max(0, int((datetime.now(timezone.utc) - published).total_seconds()))
+    stale = age > CLOUD_STATE_MAX_AGE_SECONDS
+    return {
+        "state": "stale" if stale else "fresh",
+        "fresh": not stale,
+        "published_at": published.replace(microsecond=0).isoformat(),
+        "age_seconds": age,
+        "source": bundle.get("source") or "cloud_state",
+        "message": "Cloud state stale - local engine not syncing" if stale else "Cloud state fresh",
+        "max_age_seconds": CLOUD_STATE_MAX_AGE_SECONDS,
+    }
+
+
+def _cloud_decision() -> tuple[dict[str, Any] | None, dict[str, Any], str]:
+    bundle = _cloud_bundle()
+    decision = bundle.get("decision") if isinstance(bundle.get("decision"), dict) else None
+    if decision:
+        return dict(decision), _cloud_sync_meta(bundle), "latest_cloud_state.json"
+
+    split = CLOUD_STATE_DIR / "ifvg_mtf_decision_state.json"
+    if split.exists():
+        raw = read_json(split, {})
+        if isinstance(raw, dict) and raw:
+            return dict(raw), _cloud_sync_meta({}, fallback_path=split), _rel_source(split)
+    return None, _cloud_sync_meta({}), "missing"
+
+
+def _paper_allowed_from_decision(decision: dict[str, Any]) -> bool:
+    if decision.get("paper_allowed") is not None:
+        return bool(decision.get("paper_allowed"))
+    action = str(decision.get("action") or "").upper()
+    blockers = decision.get("hard_blocks") or decision.get("blockers") or decision.get("readable_blockers") or []
+    return "TRADE_READY" in action and not bool(blockers)
+
+
+def _normalize_render_decision(decision: dict[str, Any], meta: dict[str, Any], *, synced: bool) -> dict[str, Any]:
+    out = dict(decision)
+    source = "local_authoritative_engine" if synced else "render_cloud_fallback"
+    out["source"] = source
+    out["render_dashboard_mode"] = True
+    out["live_allowed"] = False
+    out["live_orders_enabled"] = False
+    out["paper_allowed"] = _paper_allowed_from_decision(out)
+    out["cloud_sync"] = meta
+
+    market_context = out.get("market_context") if isinstance(out.get("market_context"), dict) else {}
+    market_context = dict(market_context)
+    data_health = out.get("data_health") if isinstance(out.get("data_health"), dict) else {}
+    data_health = dict(data_health)
+    if synced:
+        if market_context.get("spread_source") == "live_tick":
+            data_health["spread"] = "live_tick"
+        elif data_health.get("spread") == "live_tick":
+            market_context["spread_source"] = "live_tick"
+    else:
+        if market_context.get("spread_source") == "live_tick":
+            market_context["spread_source"] = "render_cloud_fallback"
+        if data_health.get("spread") == "live_tick":
+            data_health["spread"] = "render_cloud_fallback"
+    out["market_context"] = market_context
+    out["data_health"] = data_health
+
+    reads = out.get("timeframe_reads") if isinstance(out.get("timeframe_reads"), list) else []
+    candle_counts = []
+    for row in reads:
+        if not isinstance(row, dict):
+            continue
+        try:
+            candle_counts.append(int(float(row.get("candles") or 0)))
+        except (TypeError, ValueError):
+            pass
+    current_cloud_status = out.get("cloud_status") if isinstance(out.get("cloud_status"), dict) else {}
+    cloud_status = dict(current_cloud_status)
+    cloud_status.update({
+        "analysis": "online" if any(c > 0 for c in candle_counts) else cloud_status.get("analysis", "waiting_for_data"),
+        "source": source,
+        "data_provider": "local_authoritative_engine" if synced else cloud_status.get("data_provider", "render_cloud_fallback"),
+        "broker": "MT5 bridge local" if synced else cloud_status.get("broker", "not_synced"),
+        "orders": "locked",
+        "execution_mode": "paper",
+        "live_orders": "locked",
+        "cloud_sync": meta.get("state"),
+        "cloud_sync_age_seconds": meta.get("age_seconds"),
+        "candles_loaded": cloud_status.get("candles_loaded", sum(candle_counts)),
+        "spread": market_context.get("spread_points") or cloud_status.get("spread"),
+        "spread_source": market_context.get("spread_source") or data_health.get("spread"),
+    })
+    out["cloud_status"] = cloud_status
+    return out
+
+
+def _cloud_provider_health() -> tuple[dict[str, Any] | None, str]:
+    bundle = _cloud_bundle()
+    raw = bundle.get("provider_health") if isinstance(bundle.get("provider_health"), dict) else None
+    if raw:
+        return _normalize_provider_health_payload(raw), "latest_cloud_state.json"
+    split = CLOUD_STATE_DIR / "provider_health.json"
+    if split.exists():
+        raw = read_json(split, {})
+        if isinstance(raw, dict) and raw:
+            return _normalize_provider_health_payload(raw), _rel_source(split)
+    return None, "missing"
+
+
+def _provider_health_payload(decision: dict[str, Any] | None = None) -> dict[str, Any]:
+    cloud, _source = _cloud_provider_health()
+    if cloud is not None:
+        return cloud
+    try:
+        data = _provider_health_for_decision(decision or get_decision_for_api())
+    except Exception:
+        data = read_json(PROVIDER_HEALTH_PATH, {})
+        if not data:
+            try:
+                data = get_decision_for_api().get("provider_health_summary", {})
+            except Exception:
+                data = {}
+    return _normalize_provider_health_payload(data)
+
+
+def _performance_payload() -> dict[str, Any]:
+    bundle = _cloud_bundle()
+    raw = bundle.get("performance") if isinstance(bundle.get("performance"), dict) else None
+    source = "latest_cloud_state.json"
+    if raw is None:
+        split = CLOUD_STATE_DIR / "paper_performance_report.json"
+        if split.exists():
+            raw = read_json(split, {})
+            source = _rel_source(split)
+    if raw is None:
+        local = ROOT / "logs" / "paper_performance_report.json"
+        if local.exists():
+            raw = read_json(local, {})
+            source = _rel_source(local)
+    if not isinstance(raw, dict) or not raw:
+        raw = dict(EMPTY_PERFORMANCE)
+        source = "empty"
+    out = dict(raw)
+    out.setdefault("source", source)
+    return out
+
+
+def _rows_payload(
+    bundle_key: str,
+    split_filename: str,
+    local_filename: str,
+    *,
+    limit: int = 50,
+) -> dict[str, Any]:
+    bundle = _cloud_bundle()
+    rows = bundle.get(bundle_key) if isinstance(bundle.get(bundle_key), list) else None
+    source = "latest_cloud_state.json"
+    if rows is None:
+        split = CLOUD_STATE_DIR / split_filename
+        if split.exists():
+            rows = _read_jsonl(split, limit=limit)
+            source = _rel_source(split)
+    if rows is None:
+        local = ROOT / "logs" / local_filename
+        if local.exists():
+            rows = _read_jsonl(local, limit=limit)
+            source = _rel_source(local)
+    if rows is None:
+        rows = []
+        source = "empty"
+    clean_rows = [row for row in rows if isinstance(row, dict)][:max(1, min(int(limit), 500))]
+    return {"count": len(clean_rows), "rows": clean_rows, "items": clean_rows, "source": source}
+
+
+def _normalize_journal_row(payload: dict[str, Any], source: str) -> dict[str, Any]:
+    return {
+        "timestamp_utc": payload.get("timestamp_utc") or payload.get("ts") or payload.get("time"),
+        "action": payload.get("action") or payload.get("verdict") or "unknown",
+        "score": payload.get("final_score") if payload.get("final_score") is not None else payload.get("score"),
+        "grade": payload.get("final_grade") or payload.get("grade"),
+        "side": payload.get("side") or "none",
+        "price": payload.get("current_price"),
+        "source": source,
+        "blockers": (payload.get("readable_blockers") or payload.get("hard_blocks") or payload.get("blockers") or [])[:5],
+    }
+
+
+def _legacy_journal_payload(limit: int = 20) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -439,16 +746,7 @@ def _journal_payload(limit: int = 20) -> dict[str, Any]:
         if key in seen:
             return
         seen.add(key)
-        rows.append({
-            "timestamp_utc": stamp,
-            "action": payload.get("action") or payload.get("verdict") or "unknown",
-            "score": payload.get("final_score") if payload.get("final_score") is not None else payload.get("score"),
-            "grade": payload.get("final_grade") or payload.get("grade"),
-            "side": payload.get("side") or "none",
-            "price": payload.get("current_price"),
-            "source": source,
-            "blockers": (payload.get("readable_blockers") or payload.get("hard_blocks") or payload.get("blockers") or [])[:5],
-        })
+        rows.append(_normalize_journal_row(payload, source))
 
     jsonl = ROOT / "data" / "journal" / "decision_snapshots.jsonl"
     if jsonl.exists():
@@ -480,16 +778,36 @@ def _journal_payload(limit: int = 20) -> dict[str, Any]:
 
     rows.sort(key=lambda row: _parse_snapshot_time(row.get("timestamp_utc")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     rows = rows[:max(1, min(int(limit), 100))]
-    return {"count": len(rows), "rows": rows}
+    return {"count": len(rows), "rows": rows, "items": rows, "source": "legacy_snapshots" if rows else "empty"}
 
 
-def _decision_payload(*, refresh: bool = False) -> dict[str, Any]:
-    decision = get_decision_for_api(refresh=refresh)
-    if not isinstance(decision, dict):
-        return {}
+def _journal_payload(limit: int = 20) -> dict[str, Any]:
+    payload = _rows_payload(
+        "decision_journal",
+        "decision_journal.jsonl",
+        "decision_journal.jsonl",
+        limit=limit,
+    )
+    if payload["rows"] or payload["source"] != "empty":
+        source = str(payload.get("source") or "cloud_state")
+        rows = [_normalize_journal_row(row, source) for row in payload["rows"]]
+        return {"count": len(rows), "rows": rows, "items": rows, "source": source}
+    return _legacy_journal_payload(limit)
+
+
+def _paper_signals_payload(limit: int = 20) -> dict[str, Any]:
+    return _rows_payload(
+        "paper_signals",
+        "paper_signal_outcomes.jsonl",
+        "paper_signal_outcomes.jsonl",
+        limit=limit,
+    )
+
+
+def _enrich_decision(decision: dict[str, Any], health: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
-        health = _provider_health_for_decision(decision)
         decision = dict(decision)
+        health = health if isinstance(health, dict) else _provider_health_payload(decision)
         decision["provider_health_summary"] = health
         decision["market_intelligence_summary"] = _market_summary_from_health(health)
         decision["market_levels_summary"] = _market_levels_payload(decision)
@@ -498,6 +816,19 @@ def _decision_payload(*, refresh: bool = False) -> dict[str, Any]:
     except Exception:
         pass
     return decision
+
+
+def _decision_payload(*, refresh: bool = False) -> dict[str, Any]:
+    cloud_decision, meta, _source = _cloud_decision()
+    if cloud_decision:
+        decision = _normalize_render_decision(cloud_decision, meta, synced=True)
+        return _enrich_decision(decision, _provider_health_payload(decision))
+
+    decision = get_decision_for_api(refresh=refresh)
+    if not isinstance(decision, dict):
+        return {}
+    decision = _normalize_render_decision(decision, meta, synced=False)
+    return _enrich_decision(decision)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -509,6 +840,73 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_json_body(self, max_bytes: int = 5_000_000) -> tuple[dict[str, Any] | None, str | None]:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return None, "invalid content length"
+        if length <= 0:
+            return None, "empty request body"
+        if length > max_bytes:
+            return None, "request body too large"
+        try:
+            body = self.rfile.read(length).decode("utf-8", errors="replace")
+            payload = json.loads(body)
+        except Exception as exc:
+            return None, f"invalid JSON: {exc}"
+        if not isinstance(payload, dict):
+            return None, "payload must be a JSON object"
+        return payload, None
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if path != "/api/ingest-state":
+            return self.json({"error": "not found"}, status=404)
+
+        expected = os.getenv("GOLD_CLOUD_SYNC_TOKEN", "").strip()
+        supplied = (self.headers.get(SYNC_TOKEN_HEADER) or "").strip()
+        if not expected or supplied != expected:
+            return self.json({"ok": False, "error": "forbidden"}, status=403)
+
+        payload, error = self._read_json_body()
+        if error or payload is None:
+            return self.json({"ok": False, "error": error or "invalid payload"}, status=400)
+
+        payload = _json_safe_value(payload)
+        payload.setdefault("published_at", datetime.now(timezone.utc).replace(microsecond=0).isoformat())
+        payload.setdefault("source", "local_authoritative_engine")
+        payload.setdefault("mode", "paper")
+        payload.setdefault("live_orders", "locked")
+
+        try:
+            _write_json(LATEST_CLOUD_STATE, payload)
+            if isinstance(payload.get("decision"), dict):
+                _write_json(CLOUD_STATE_DIR / "ifvg_mtf_decision_state.json", payload["decision"])
+            if isinstance(payload.get("performance"), dict):
+                _write_json(CLOUD_STATE_DIR / "paper_performance_report.json", payload["performance"])
+            if isinstance(payload.get("provider_health"), dict):
+                _write_json(CLOUD_STATE_DIR / "provider_health.json", payload["provider_health"])
+            if isinstance(payload.get("paper_signals"), list):
+                _write_jsonl(CLOUD_STATE_DIR / "paper_signal_outcomes.jsonl", payload["paper_signals"])
+            if isinstance(payload.get("decision_journal"), list):
+                _write_jsonl(CLOUD_STATE_DIR / "decision_journal.jsonl", payload["decision_journal"])
+        except Exception as exc:
+            return self.json({"ok": False, "error": f"failed to persist cloud state: {exc}"}, status=500)
+
+        return self.json({
+            "ok": True,
+            "published_at": payload.get("published_at"),
+            "source": payload.get("source"),
+            "items": {
+                "decision": isinstance(payload.get("decision"), dict),
+                "performance": isinstance(payload.get("performance"), dict),
+                "provider_health": isinstance(payload.get("provider_health"), dict),
+                "paper_signals": len(payload.get("paper_signals") or []) if isinstance(payload.get("paper_signals"), list) else 0,
+                "decision_journal": len(payload.get("decision_journal") or []) if isinstance(payload.get("decision_journal"), list) else 0,
+            },
+        })
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -517,14 +915,16 @@ class Handler(SimpleHTTPRequestHandler):
             refresh = (query.get("refresh") or ["0"])[0].lower() in {"1", "true", "yes"}
             return self.json(_decision_payload(refresh=refresh))
         if path == "/api/provider-health" or path == "/api/health":
-            try:
-                data = _provider_health_for_decision(get_decision_for_api())
-            except Exception:
-                data = read_json(PROVIDER_HEALTH_PATH, {})
-                if not data:
-                    data = get_decision_for_api().get("provider_health_summary", {})
-            data = _normalize_provider_health_payload(data)
+            data = _provider_health_payload(_decision_payload())
             return self.json({"ok": True, **data} if path == "/api/health" else data)
+        if path == "/api/performance":
+            return self.json(_performance_payload())
+        if path == "/api/paper-signals" or path == "/api/paper_signals":
+            limit = int((query.get("limit") or ["20"])[0])
+            return self.json(_paper_signals_payload(limit))
+        if path == "/api/decision-journal" or path == "/api/decision_journal":
+            limit = int((query.get("limit") or ["20"])[0])
+            return self.json(_journal_payload(limit))
         if path == "/api/market-intelligence":
             return self.json(_decision_payload().get("market_intelligence_summary", {}))
         if path == "/api/market-levels":
@@ -572,8 +972,8 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(_safe_json({"error": "not found"}))
 
-    def json(self, payload: Any) -> None:
-        self._send_bytes(_safe_json(payload), "application/json; charset=utf-8")
+    def json(self, payload: Any, *, status: int = 200) -> None:
+        self._send_bytes(_safe_json(payload), "application/json; charset=utf-8", status=status)
 
 
 def serve(host: str = "0.0.0.0", port: int = 8770) -> None:

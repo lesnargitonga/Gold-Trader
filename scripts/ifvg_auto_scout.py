@@ -19,6 +19,8 @@ UPDATER = REPO / "scripts" / "update_live_inputs.py"
 JOURNAL = REPO / "scripts" / "journal_decision_snapshot.py"
 OUTCOMES = REPO / "scripts" / "update_paper_signal_outcomes.py"
 REPORT = REPO / "scripts" / "report_paper_performance.py"
+PUBLISH_PAYLOAD = REPO / "scripts" / "publish_state_to_render_payload.py"
+PUBLISH_RENDER = REPO / "scripts" / "publish_state_to_render.py"
 
 
 def child_env() -> dict[str, str]:
@@ -40,8 +42,10 @@ def run_step(step: Path) -> None:
 
 
 def run_full_engine() -> None:
-    for step in (UPDATER, FULL_ENGINE, JOURNAL, OUTCOMES, REPORT):
+    for step in (UPDATER, FULL_ENGINE, JOURNAL, OUTCOMES, REPORT, PUBLISH_PAYLOAD):
         run_step(step)
+    if os.environ.get("GOLD_RENDER_INGEST_URL") and os.environ.get("GOLD_CLOUD_SYNC_TOKEN"):
+        run_step(PUBLISH_RENDER)
 
 def main() -> int:
     scout_log(f"IFVG full-system auto-scout starting · every {POLL_SECONDS}s")

@@ -1,6 +1,5 @@
 (function () {
-  // Deprecated: not the active local command center.
-  // Official UI: src/gold_trader/web/static/index.html
+  // Render dashboard mode. The local PC remains the authoritative trading/data engine.
   "use strict";
 
   var TFs = ["D1", "H4", "H1", "M30", "M15", "M5", "M1"];
@@ -53,6 +52,39 @@
     if (a.indexOf("HARD") >= 0) return "WAIT HARD BLOCK";
     if (a.indexOf("TRADE_READY") >= 0) return "PAPER TRADE READY";
     return a.replace(/_/g, " ");
+  }
+
+  function cloudSync(d) {
+    var sync = d.cloud_sync || {};
+    var age = sync.age_seconds;
+    var stale = sync.state === "stale" || (age !== null && age !== undefined && Number(age) > 300);
+    if (!sync.state) {
+      sync.state = "missing";
+    }
+    sync.isStale = stale;
+    sync.label = stale ? "stale" : sync.state;
+    sync.message = stale ? "Cloud state stale — local engine not syncing" : (sync.message || "");
+    return sync;
+  }
+
+  function isLocalAuthoritative(d) {
+    return d.source === "local_authoritative_engine" || (d.cloud_sync || {}).source === "local_authoritative_engine";
+  }
+
+  function sourceLabel(d) {
+    if (isLocalAuthoritative(d)) return "local authoritative engine";
+    return d.source || ((d.cloud_status || {}).source) || "render cloud fallback";
+  }
+
+  function brokerLabel(d) {
+    if (isLocalAuthoritative(d)) return "MT5 bridge local";
+    return ((d.cloud_status || {}).broker) || "not synced";
+  }
+
+  function dataLabel(d) {
+    if (isLocalAuthoritative(d)) return "";
+    var provider = (d.cloud_status || {}).data_provider;
+    return provider && provider !== "local_authoritative_engine" ? provider : "render cloud fallback";
   }
 
   function scoreMap(d) {
@@ -159,6 +191,8 @@
 
   function top(d) {
     var age = d.source_age_status || {};
+    var sync = cloudSync(d);
+    var provider = dataLabel(d);
     var navItems = [
       "trade:Trade Cockpit",
       "market:Market Context",
@@ -171,7 +205,7 @@
     var ageSec = age.age_seconds;
     var ageLabel = ageSec != null && ageSec !== "" ? ageSec : "—";
     return (
-      '<aside class="side"><div class="brand"><div class="coin"></div><div><h1>Gold Trader</h1><p>COMMAND CENTER</p></div></div><nav class="nav">' +
+      '<aside class="side"><div class="brand"><div class="coin"></div><div><h1>Gold Trader</h1><p>RENDER DASHBOARD MODE</p></div></div><nav class="nav">' +
       navItems
         .map(function (x) {
           var parts = x.split(":");
@@ -196,19 +230,30 @@
       esc(safe(d.final_score, 0)) +
       '/100</b><br/>Mode <b>' +
       esc(((d.cloud_status || {}).execution_mode) || "paper") +
-      '</b><br/>Age <b>' +
-      esc(ageLabel) +
-      's</b></div></aside><main class="main"><div class="top"><div class="title"><h2>Gold Trader Command Center</h2><p>Full-system IFVG analysis, market awareness, and execution safety.</p></div><div class="chips"><span class="chip">Symbol <b>' +
+      '</b><br/>Sync <b>' +
+      esc(sync.label || "missing") +
+      '</b></div></aside><main class="main"><div class="top"><div class="title"><h2>Gold Trader Command Center</h2><p>RENDER DASHBOARD MODE · Source: ' +
+      esc(sourceLabel(d)) +
+      ' · Orders locked.</p></div><div class="chips"><span class="chip">Symbol <b>' +
       esc(safe(d.symbol, "XAUUSD")) +
-      '</b></span><span class="chip">Data <b>' +
-      esc((d.cloud_status || {}).data_provider || "twelvedata") +
+      '</b></span><span class="chip">Source <b>' +
+      esc(sourceLabel(d)) +
+      '</b></span><span class="chip">Broker <b>' +
+      esc(brokerLabel(d)) +
       '</b></span><span class="chip lock">Orders <b>' +
-      esc(d.live_orders_enabled ? "open" : "locked") +
+      esc("locked") +
+      '</b></span><span class="chip"><i class="dot ' +
+      esc(sync.isStale || sync.state === "missing" ? "warning" : "ok") +
+      '"></i> Cloud sync <b>' +
+      esc(sync.label || "missing") +
       '</b></span><span class="chip"><i class="dot ' +
       esc(age.severity || "warning") +
       '"></i> ' +
       esc(age.label || "unknown") +
-      '</span><button type="button" class="chip ok" id="gt-refresh">Refresh</button></div></div>'
+      '</span>' +
+      (provider ? '<span class="chip">Data <b>' + esc(provider) + '</b></span>' : "") +
+      '<button type="button" class="chip ok" id="gt-refresh">Refresh</button></div></div>' +
+      (sync.isStale ? '<div class="brief danger" style="margin-bottom:18px">' + esc(sync.message) + "</div>" : "")
     );
   }
 
