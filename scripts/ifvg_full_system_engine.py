@@ -780,6 +780,18 @@ def main() -> int:
     jp = REPO / policy["operator_updates"]["json_path"]; mp = REPO / policy["operator_updates"]["markdown_path"]
     jp.parent.mkdir(parents=True, exist_ok=True); mp.parent.mkdir(parents=True, exist_ok=True)
     decision_dict = asdict(decision)
+    # Normalize canonical trading symbol at the source. Do NOT let broker/instrument
+    # alias leak into the trading decision identity. Store broker alias separately.
+    try:
+        broker_sym = str(decision_dict.get("symbol") or "").strip()
+    except Exception:
+        broker_sym = ""
+    # Canonical trading symbol used throughout the system and published to Render
+    canonical_symbol = "XAUUSD"
+    decision_dict["broker_symbol"] = broker_sym if broker_sym else None
+    decision_dict["symbol"] = canonical_symbol
+    decision_dict["symbol_display"] = "XAU/USD"
+
     spread_source = str((decision_dict.get("market_context") or {}).get("spread_source") or "unknown")
     decision_dict["data_health"] = {"spread": spread_source}
     jp.write_text(json.dumps(decision_dict, indent=2, allow_nan=False)); mp.write_text(decision.operator_message)
