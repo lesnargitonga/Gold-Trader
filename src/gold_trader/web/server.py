@@ -23,6 +23,15 @@ from urllib.parse import parse_qs, urlparse
 from .runtime_config import RuntimeConfig, load_runtime_config, save_runtime_config
 from ..infra.secrets import resolve_bridge_secret, save_secrets, secrets_status
 from ..core.market_intelligence_ux import get_decision_for_api
+# Prefer the Render-normalization utilities when available so the web server
+# can return the exact local engine decision shape when the cloud bundle is
+# authored by the local authoritative engine.
+try:
+    from .market_intelligence_api import _cloud_bundle, _cloud_sync_meta, _normalize_render_decision  # type: ignore
+except Exception:
+    _cloud_bundle = None
+    _cloud_sync_meta = None
+    _normalize_render_decision = None
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -1895,6 +1904,25 @@ def _api_decision(query: dict[str, list[str]]) -> dict[str, Any]:
     except Exception:
         refresh = False
     try:
+        # Prefer the cloud bundle normalized decision when the bundle is
+        # authored by the local authoritative engine and is fresh. This
+        # ensures Render / remote dashboards show the exact local engine
+        # decision shape (flattened and normalized).
+        try:
+            if _cloud_bundle and _cloud_sync_meta and _normalize_render_decision:
+                bundle = _cloud_bundle()
+                decision = bundle.get("decision") if isinstance(bundle.get("decision"), dict) else None
+                meta = _cloud_sync_meta(bundle) if bundle is not None else {}
+                source = bundle.get("source") or (decision or {}).get("source") if isinstance(decision, dict) else bundle.get("source")
+                if decision and source == "local_authoritative_engine" and meta.get("state") == "fresh":
+                    try:
+                        return _normalize_render_decision(decision, meta, synced=True)
+                    except Exception:
+                        pass
+        except Exception:
+            # fall back to normal path on any normalization error
+            pass
+
         return get_decision_for_api(refresh=refresh)
     except Exception as exc:
         return {"error": str(exc)}

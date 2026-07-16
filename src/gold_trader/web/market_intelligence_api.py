@@ -919,7 +919,25 @@ class Handler(SimpleHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         if path == "/api/decision":
             refresh = (query.get("refresh") or ["0"])[0].lower() in {"1", "true", "yes"}
-            return self.json(_decision_payload(refresh=refresh))
+            payload = _decision_payload(refresh=refresh)
+            # Defensive normalization: ensure legacy symbol names map to canonical trading symbol
+            try:
+                sym = str(payload.get("symbol") or "").strip().upper()
+                if sym in {"GOLD", "XAU"}:
+                    payload["symbol"] = "XAUUSD"
+                    payload["symbol_display"] = "XAU/USD"
+            except Exception:
+                pass
+            # Ensure source_age_status exists for frontend consumption
+            if not isinstance(payload.get("source_age_status"), dict):
+                try:
+                    meta = _cloud_sync_meta(_cloud_bundle())
+                    age_sec = meta.get("age_seconds")
+                    severity = "ok" if (age_sec is not None and age_sec <= CLOUD_STATE_MAX_AGE_SECONDS) else "warning"
+                    payload["source_age_status"] = {"age_seconds": age_sec, "label": age_sec if age_sec is not None else "—", "severity": severity}
+                except Exception:
+                    payload["source_age_status"] = {"age_seconds": None, "label": "—", "severity": "warning"}
+            return self.json(payload)
         if path == "/api/provider-health" or path == "/api/health":
             data = _provider_health_payload(_decision_payload())
             return self.json({"ok": True, **data} if path == "/api/health" else data)

@@ -95,6 +95,53 @@ class ApprovalBriefTests(unittest.TestCase):
         self.assertFalse(brief["can_enter"])
         self.assertTrue(any("grade b" in b.lower() and "audit" in b.lower() for b in brief["blockers"]))
 
+    def _grade_b_setup(self, tf: int) -> dict:
+        return {
+            "verdict": "valid_entry",
+            "externally_blocked": False,
+            "side": "short",
+            "score": 78,
+            "grade": "B",
+            "timeframe_minutes": tf,
+            "grading": {"letter": "B", "action": "Valid — reduce size"},
+            "zone": {"bot": 4540.0, "top": 4557.0},
+            "entry_plan": {"entry": 4557, "stop": 4568, "tp1": 4525, "tp2": 4510, "tp3": 4480},
+            "checklist": [],
+            "warnings": [],
+            "external_research": {"enabled": False, "mode": "soft"},
+        }
+
+    def test_grade_b_blocked_on_1h(self) -> None:
+        # Grade B on 1H must never be eligible (audit: B-1H 5R PF 0.83).
+        brief = build_approval_brief(self._grade_b_setup(60), _live_workflow())
+        self.assertFalse(brief["can_enter"])
+        self.assertTrue(any("grade b" in b.lower() for b in brief["blockers"]))
+
+    def test_grade_b_paper_eligible_on_4h(self) -> None:
+        # Grade B on 4H is paper-eligible with a 5R runner, but NOT on the live track.
+        brief = build_approval_brief(self._grade_b_setup(240), _live_workflow())
+        self.assertTrue(brief["can_enter"])
+        self.assertFalse(brief["live_track"])
+        self.assertEqual(brief["tp_model"], "runner_5r")
+        # 5R short target: 4557 - 5*(4568-4557) = 4502
+        self.assertAlmostEqual(brief["tp_target"], 4502.0, places=2)
+
+    def test_grade_a_5r_runner_target(self) -> None:
+        setup = {
+            "verdict": "valid_entry", "externally_blocked": False, "side": "short",
+            "score": 90, "grade": "A", "timeframe_minutes": 60,
+            "grading": {"letter": "A", "action": "Take normal risk"},
+            "zone": {"bot": 4540.0, "top": 4557.0},
+            "entry_plan": {"entry": 4557, "stop": 4568, "tp1": 4525},
+            "checklist": [], "warnings": [],
+            "external_research": {"enabled": False, "mode": "soft"},
+        }
+        brief = build_approval_brief(setup, _live_workflow())
+        self.assertTrue(brief["can_enter"])
+        self.assertTrue(brief["live_track"])
+        self.assertEqual(brief["tp_model"], "runner_5r")
+        self.assertAlmostEqual(brief["tp_target"], 4502.0, places=2)
+
     def test_grade_c_blocked_for_live(self) -> None:
         setup = {
             "verdict": "alert_wait",
@@ -111,7 +158,11 @@ class ApprovalBriefTests(unittest.TestCase):
         self.assertFalse(brief["can_enter"])
         self.assertTrue(any("grade c" in b.lower() for b in brief["blockers"]))
 
-    def test_alignment_blocker(self) -> None:
+    def test_alignment_advisory_not_blocking(self) -> None:
+        # Corrected gate: alignment is advisory only. A Grade-A signal with a
+        # non-preferred alignment but non-opposed macro must still go green.
+        from gold_trader.assistants.ifvg_workflow import evaluate_live_sentiment
+
         setup = {
             "verdict": "valid_entry",
             "externally_blocked": False,
@@ -119,23 +170,52 @@ class ApprovalBriefTests(unittest.TestCase):
             "score": 90,
             "grade": "A",
             "grading": {"letter": "A", "action": "Take normal risk"},
+            "zone": {"bot": 4540.0, "top": 4557.0},
+            "entry_plan": {"stop": 4568, "tp1": 4525, "tp2": 4510, "tp3": 4480},
+            "checklist": [],
+            "warnings": [],
+            "external_research": {"enabled": False, "mode": "soft"},
+        }
+        sentiment = evaluate_live_sentiment(
+            side="short", alignment="mixed bullish bias", macro_regime="aligned",
+            macro_override=False,
+        )
+        self.assertEqual(sentiment["blockers"], [])
+        brief = build_approval_brief(setup, _live_workflow(live_sentiment=sentiment))
+        self.assertTrue(brief["can_enter"])
+
+    def test_macro_opposed_blocked_for_live(self) -> None:
+        # Corrected gate: aligned/mixed pass; only `opposed` blocks for live.
+        setup = {
+            "verdict": "valid_entry",
+            "externally_blocked": False,
+            "side": "short",
+            "score": 90,
+            "grade": "A",
+            "grading": {"letter": "A", "action": "Take normal risk"},
+            "zone": {"bot": 4540.0, "top": 4557.0},
+            "entry_plan": {"stop": 4568, "tp1": 4525, "tp2": 4510, "tp3": 4480},
             "checklist": [],
             "warnings": [],
             "external_research": {"enabled": False, "mode": "soft"},
         }
         wf = _live_workflow(
             live_sentiment={
-                "alignment": "mixed bullish bias",
-                "macro_regime": "mixed",
-                "blockers": ["Alignment «mixed bullish bias» — live profile requires mixed bearish bias (30-day audit)"],
+                "alignment": "mixed bearish bias",
+                "macro_regime": "opposed",
+                "blockers": [
+                    "macro_regime=opposed — blocked "
+                    "(63-day audit: opposed 0% WR n=4; set IFVG_MACRO_OVERRIDE=1 to bypass)"
+                ],
                 "warnings": [],
             },
         )
         brief = build_approval_brief(setup, wf)
         self.assertFalse(brief["can_enter"])
-        self.assertTrue(any("mixed bullish" in b for b in brief["blockers"]))
+        self.assertTrue(any("macro_regime=opposed" in b for b in brief["blockers"]))
 
-    def test_macro_aligned_blocked_for_live(self) -> None:
+    def test_macro_aligned_allowed_for_live(self) -> None:
+        # The slice the old gate wrongly killed: Grade A short, macro=aligned.
         setup = {
             "verdict": "valid_entry",
             "externally_blocked": False,
@@ -153,16 +233,12 @@ class ApprovalBriefTests(unittest.TestCase):
             live_sentiment={
                 "alignment": "mixed bearish bias",
                 "macro_regime": "aligned",
-                "blockers": [
-                    "macro_regime=aligned — live profile requires macro_regime=mixed "
-                    "(30-day audit: aligned −57R; set IFVG_MACRO_OVERRIDE=1 to bypass)"
-                ],
+                "blockers": [],
                 "warnings": [],
             },
         )
         brief = build_approval_brief(setup, wf)
-        self.assertFalse(brief["can_enter"])
-        self.assertTrue(any("macro_regime=aligned" in b for b in brief["blockers"]))
+        self.assertTrue(brief["can_enter"])
 
     def test_blocked_externally_hard_mode_only(self) -> None:
         from gold_trader.assistants.ifvg_grading import compute_setup_grading

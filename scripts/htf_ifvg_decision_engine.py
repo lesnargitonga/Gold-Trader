@@ -124,7 +124,23 @@ def bridge_request(path: str, params: dict[str, Any]) -> Any:
         return json.loads(resp.read().decode("utf-8"))
 
 def fetch_candles(symbol: str, timeframe: str, limit: int = 500) -> list[Candle]:
-    rows = bridge_request("/candles", {"symbol": symbol, "timeframe": timeframe, "limit": limit})
+    def _tf_to_minutes(tf: str | int) -> int:
+        try:
+            if isinstance(tf, int):
+                return int(tf)
+            s = str(tf).upper().strip()
+            if s.startswith("M") and s[1:].isdigit():
+                return int(s[1:])
+            if s.startswith("H") and s[1:].isdigit():
+                return int(s[1:]) * 60
+            if s.startswith("D") and s[1:].isdigit():
+                return int(s[1:]) * 1440
+            return int(s)
+        except Exception:
+            return 15
+
+    tf_minutes = _tf_to_minutes(timeframe)
+    rows = bridge_request("/candles", {"symbol": symbol, "timeframe": tf_minutes, "limit": limit})
     return [Candle(str(r.get("time") or r.get("timestamp") or ""), float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]), float(r.get("volume", 0) or 0)) for r in rows][-limit:]
 
 def read_csv_fallback(symbol: str, timeframe: str, limit: int = 500) -> list[Candle]:

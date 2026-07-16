@@ -19,6 +19,7 @@ from ..live.broker import BrokerError
 from ..live.mt5_bridge_client import MT5RemoteBroker
 from ..models import MarketBar, Side
 from .ifvg_confluence import find_ifvg_setups, load_market_levels, setup_to_dict
+from .tp_routing import compute_target, default_risk_usd, resolve_tp_route, runner_r_multiple
 from .ifvg_workflow import (
     WORKFLOW_FORMULA,
     alignment_from_bars,
@@ -183,9 +184,13 @@ def build_approval_brief(
     sentiment_blockers = list(sentiment.get("blockers") or [])
     sentiment_warnings = list(sentiment.get("warnings") or [])
     workflow_ready = bool(workflow.get("workflow_ready"))
+    # Per-slice TP routing & paper eligibility (config/tp_routing.json).
+    timeframe = int(setup.get("timeframe_minutes") or 0) or DEFAULT_PRIMARY_TF
+    route = resolve_tp_route(final_letter, timeframe)
+    route_eligible = bool(route.get("eligible"))
     can_enter = (
         not blocked
-        and final_letter == "A"
+        and route_eligible
         and verdict in ("valid_entry", "alert_wait")
         and tech_score >= 65
         and workflow_ready
@@ -196,6 +201,12 @@ def build_approval_brief(
         can_enter = False
     plan = setup.get("entry_plan") or {}
     zone = setup.get("zone") or {}
+    # Routed target (e.g. 5R runner). Structural plan.tp1 stays the fallback reference.
+    tp_model = str(route.get("tp_model") or "off")
+    tp_target = compute_target(
+        str(setup.get("side") or ""), plan.get("entry"), plan.get("stop"), tp_model,
+        structural_fallback=plan.get("tp1"),
+    ) if route_eligible else None
     ext = setup.get("external_research") or {}
     macro = ext.get("macro") or {}
     opts = ext.get("options") or {}
@@ -253,20 +264,16 @@ def build_approval_brief(
         blockers.append(str(s.get("detail") or s.get("title") or "Workflow gate failed"))
     blockers.extend(sentiment_blockers)
     if not can_enter:
-        if final_letter in ("B", "C"):
-            blockers.append(f"Grade {final_letter} blocked for live — {LIVE_GRADE_AUDIT_NOTE}")
-        elif final_letter == "D":
-            blockers.append(str(grading.get("action") or f"Grade {final_letter} — watch or avoid"))
+        if not route_eligible:
+            blockers.append(str(route.get("reason") or f"Grade {final_letter} on M{timeframe} not eligible — {LIVE_GRADE_AUDIT_NOTE}"))
         elif not workflow_ready:
-            blockers.append("Workflow not ready — resolve workflow blockers before live entry")
+            blockers.append("Workflow not ready — resolve workflow blockers before entry")
         elif verdict == "externally_blocked":
             blockers.append("Externally blocked (hard mode only)")
         elif verdict == "ignore":
             blockers.append("No tradable IFVG on this timeframe")
         elif tech_score < 65:
             blockers.append(f"IFVG score {tech_score} below minimum (65)")
-        elif final_letter != "A":
-            blockers.append(f"Grade {final_letter} — live profile requires grade A")
         elif verdict not in ("valid_entry", "alert_wait"):
             blockers.append(f"Verdict «{verdict}»")
         elif sentiment_blockers:
@@ -307,8 +314,14 @@ def build_approval_brief(
             f"{action} IFVG zone {float(zlo):.2f}–{float(zhi):.2f} — watch retest reaction (reject vs break)"
         )
     if plan.get("stop") is not None:
-        model_watch.append(f"Hard stop {float(plan['stop']):.2f} · invalidation {plan.get('invalidation', plan.get('stop'))}")
-    if plan.get("tp1") is not None:
+        model_watch.append(f"Hard stop {float(plan['stop']):.2f} (1R, just outside IFVG) · invalidation {plan.get('invalidation', plan.get('stop'))}")
+    if tp_target is not None and tp_model.startswith("runner"):
+        rm = runner_r_multiple()
+        model_watch.append(
+            f"Primary target {float(tp_target):.2f} — {rm:.0f}R runner ({tp_model}); "
+            f"structural refs: TP1 {float(plan.get('tp1', 0)):.2f}/TP2 {float(plan.get('tp2', 0)):.2f}"
+        )
+    elif plan.get("tp1") is not None:
         tp_parts = [f"TP1 {float(plan['tp1']):.2f} (min 1R floor)"]
         if plan.get("tp2") is not None:
             tp_parts.append(f"TP2 {float(plan['tp2']):.2f}")
@@ -323,15 +336,19 @@ def build_approval_brief(
 
     style = str(setup.get("trade_style") or "trade")
     entry_type = workflow.get("entry_type") or "pullback"
+    live_track = bool(route.get("live_track"))
     if can_enter:
-        headline = f"Grade A ready — manual Enter trade · {side} {style} ({entry_type})"
+        track = "live-track" if live_track else "PAPER ONLY (excluded from live go/no-go)"
+        tgt = f" · target {float(tp_target):.2f}" if tp_target is not None else ""
+        headline = f"Grade {final_letter} ready — manual Enter trade · {side} {style} ({entry_type}) · {track}"
         summary = (
-            str(setup.get("ai_verdict") or grading.get("action") or "IFVG grade A passes live profile.")
+            str(setup.get("ai_verdict") or grading.get("action") or f"IFVG grade {final_letter} passes the paper profile.")
+            + f" {route.get('reason', '')}{tgt}."
             + " Manual approval required — bundle accept/reject is not permission to trade."
         )
     elif final_letter in ("B", "C"):
-        headline = f"Watch — grade {final_letter} · paper only (live blocked)"
-        summary = f"{LIVE_GRADE_AUDIT_NOTE}. {grading.get('action') or setup.get('ai_verdict') or 'Reduce confidence; not live-eligible.'}"
+        headline = f"Watch — grade {final_letter} · {route.get('reason') or 'not eligible on this timeframe'}"
+        summary = f"{route.get('reason') or LIVE_GRADE_AUDIT_NOTE}. {grading.get('action') or setup.get('ai_verdict') or 'Reduce confidence.'}"
     elif final_letter == "D":
         headline = f"Watch — grade {final_letter} · lower quality setup"
         summary = str(grading.get("action") or setup.get("ai_verdict") or "Reduce confidence; not live-eligible.")
@@ -355,10 +372,16 @@ def build_approval_brief(
         "workflow_passes": workflow.get("passes"),
         "grading": grading,
         "final_grade": final_letter,
+        "timeframe_minutes": timeframe,
         "suggested_risk_pct": grading.get("suggested_risk_pct"),
-        "suggested_risk_usd": LIVE_RISK_USD if final_letter == "A" else None,
+        "suggested_risk_usd": (default_risk_usd() if route_eligible else None),
         "manual_approval_required": True,
-        "live_profile": "grade_a_only",
+        "live_profile": "per_slice_routing",
+        "tp_model": tp_model if route_eligible else None,
+        "tp_target": tp_target,
+        "route_eligible": route_eligible,
+        "live_track": live_track,
+        "route_note": route.get("reason"),
         "research_mode": research_mode,
         "live_sentiment": sentiment or None,
         "reasons": reasons,
@@ -370,6 +393,8 @@ def build_approval_brief(
             "entry_low": plan.get("entry_low"),
             "entry_high": plan.get("entry_high"),
             "stop": plan.get("stop"),
+            "tp_model": tp_model if route_eligible else None,
+            "target": tp_target,
             "tp1": plan.get("tp1"),
             "tp2": plan.get("tp2"),
             "tp3": plan.get("tp3"),
@@ -523,6 +548,7 @@ def run_scout_scan(
         setup_dict["workflow"] = workflow
     state["workflow"] = workflow
     state["setup"] = setup_dict
+    state["current_price"] = last_price
     state["approval_brief"] = build_approval_brief(setup_dict, workflow)
     brief = state["approval_brief"]
     if setup_dict:

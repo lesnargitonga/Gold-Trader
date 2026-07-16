@@ -80,15 +80,15 @@ class WorkflowTests(unittest.TestCase):
         kind, _ = classify_entry_type(setup, price_position="middle", ltf_status="pass")
         self.assertEqual(kind, "pullback")
 
-    def test_macro_aligned_blocked(self) -> None:
+    def test_macro_aligned_allowed(self) -> None:
+        # Corrected gate (63-day audit): aligned is the winning regime, not blocked.
         out = evaluate_live_sentiment(
             side="short",
             alignment="mixed bearish bias",
             macro_regime="aligned",
             macro_override=False,
         )
-        self.assertTrue(any("macro_regime=aligned" in b for b in out["blockers"]))
-        self.assertEqual(out["warnings"], [])
+        self.assertEqual(out["blockers"], [])
 
     def test_macro_mixed_allowed(self) -> None:
         out = evaluate_live_sentiment(
@@ -99,11 +99,41 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertEqual(out["blockers"], [])
 
-    def test_macro_override_softens_block(self) -> None:
+    def test_macro_opposed_blocked(self) -> None:
+        # Only `opposed` blocks now (audit: 0% WR, n=4).
         out = evaluate_live_sentiment(
             side="short",
             alignment="mixed bearish bias",
-            macro_regime="aligned",
+            macro_regime="opposed",
+            macro_override=False,
+        )
+        self.assertTrue(any("macro_regime=opposed" in b for b in out["blockers"]))
+
+    def test_macro_weak_warns_not_blocks(self) -> None:
+        out = evaluate_live_sentiment(
+            side="short",
+            alignment="mixed bearish bias",
+            macro_regime="partial",
+            macro_override=False,
+        )
+        self.assertEqual(out["blockers"], [])
+        self.assertTrue(any("partial" in w for w in out["warnings"]))
+
+    def test_alignment_non_preferred_warns_not_blocks(self) -> None:
+        out = evaluate_live_sentiment(
+            side="short",
+            alignment="mixed bullish bias",
+            macro_regime="mixed",
+            macro_override=False,
+        )
+        self.assertEqual(out["blockers"], [])
+        self.assertTrue(any("Alignment" in w for w in out["warnings"]))
+
+    def test_macro_override_softens_opposed_block(self) -> None:
+        out = evaluate_live_sentiment(
+            side="short",
+            alignment="mixed bearish bias",
+            macro_regime="opposed",
             macro_override=True,
         )
         self.assertEqual(out["blockers"], [])

@@ -17,8 +17,14 @@ LIVE_ALIGNMENT_BLOCKERS = frozenset({
     "fully aligned bearish",
     "compression-heavy mixed stack",
 })
-LIVE_MACRO_REGIME_REQUIRED = "mixed"
-LIVE_MACRO_REGIME_BLOCKERS = frozenset({"aligned", "opposed", "partial", "unavailable"})
+# Macro regime gate — corrected 2026-06 from the 63-day HTF audit.
+# logs/ifvg_htf_edge_audit.json: Grade A is positive in `aligned` (PF 1.78, n=75)
+# and `mixed` (thin), and only `opposed` loses (0% WR, n=4). The previous
+# macro_regime==mixed REQUIREMENT was overfit on n=1 and blocked the 75 aligned
+# winners, driving can_enter≈0 (logs/can_enter_replay.json: current=0 -> macro_fix=49).
+# We now block ONLY `opposed`; `partial`/`unavailable` warn (weak macro), not block.
+LIVE_MACRO_REGIME_BLOCKERS = frozenset({"opposed"})
+LIVE_MACRO_REGIME_WEAK = frozenset({"partial", "unavailable"})
 
 WORKFLOW_FORMULA = (
     "HTF bias → key zone → live price location → 5M/1M confirmation → "
@@ -119,34 +125,39 @@ def evaluate_live_sentiment(
     macro_regime: str,
     macro_override: bool | None = None,
 ) -> dict[str, Any]:
-    """Audit live-profile sentiment gates (Apr–May 2026). Returns blockers + warnings."""
+    """Live-profile sentiment gates (corrected 2026-06). Returns blockers + warnings.
+
+    Macro: hard-block ONLY `opposed`. Alignment: ADVISORY only — the old
+    requirement of exactly "mixed bearish bias" was overfit (same n=7 era as the
+    macro gate) and wrongly blocked e.g. "fully aligned bearish" shorts.
+    logs/can_enter_replay.json: demoting alignment lifts can_enter 49 -> 69.
+    """
     blockers: list[str] = []
     warnings: list[str] = []
     override = macro_override if macro_override is not None else macro_override_enabled()
 
-    if alignment != "unavailable":
-        if alignment == LIVE_ALIGNMENT_PREFERRED:
-            pass
-        elif alignment in LIVE_ALIGNMENT_BLOCKERS:
-            blockers.append(
-                f"Alignment «{alignment}» — live profile requires {LIVE_ALIGNMENT_PREFERRED} (30-day audit)"
+    # Alignment is advisory only — never a hard block.
+    if alignment not in ("unavailable", LIVE_ALIGNMENT_PREFERRED):
+        warnings.append(
+            f"Alignment «{alignment}» — audit prefers {LIVE_ALIGNMENT_PREFERRED}; advisory, not a block"
+        )
+
+    if macro_regime in LIVE_MACRO_REGIME_BLOCKERS:
+        if override:
+            warnings.append(
+                f"macro_regime={macro_regime} — IFVG_MACRO_OVERRIDE active; "
+                "normally blocked (opposed regime, 63-day audit 0% WR n=4)"
             )
         else:
-            warnings.append(
-                f"Alignment «{alignment}» — audit prefers {LIVE_ALIGNMENT_PREFERRED}"
+            blockers.append(
+                f"macro_regime={macro_regime} — blocked "
+                "(63-day audit: opposed 0% WR n=4; set IFVG_MACRO_OVERRIDE=1 to bypass)"
             )
-
-    if macro_regime == LIVE_MACRO_REGIME_REQUIRED:
-        pass
-    elif override:
+    elif macro_regime in LIVE_MACRO_REGIME_WEAK:
         warnings.append(
-            f"macro_regime={macro_regime} — IFVG_MACRO_OVERRIDE active; live profile normally requires mixed"
+            f"macro_regime={macro_regime} — macro confirmation weak; size with caution"
         )
-    elif macro_regime in LIVE_MACRO_REGIME_BLOCKERS or macro_regime != LIVE_MACRO_REGIME_REQUIRED:
-        blockers.append(
-            f"macro_regime={macro_regime} — live profile requires macro_regime=mixed "
-            f"(30-day audit: aligned −57R; set IFVG_MACRO_OVERRIDE=1 to bypass)"
-        )
+    # aligned / mixed: pass (Grade A positive in both per 63-day audit)
 
     return {
         "alignment": alignment,
@@ -443,10 +454,15 @@ def build_workflow_context(
     passes = sum(1 for s in steps if s["status"] == "pass")
     letter = str(grading_ctx.get("letter") or "")
     hard_blocked = bool((setup or {}).get("externally_blocked")) and research_mode == "hard"
+    # Eligibility is per-slice (grade x timeframe) via config/tp_routing.json, not
+    # hard-coded grade A. Lets Grade B be paper-ready on 4H only, etc.
+    from .tp_routing import resolve_tp_route
+    tf_min = int((setup or {}).get("timeframe_minutes") or 0)
+    route_eligible = bool(resolve_tp_route(letter, tf_min).get("eligible")) if setup else False
     workflow_ready = (
         bool(setup)
         and setup.get("verdict") in ("valid_entry", "alert_wait")
-        and letter == "A"
+        and route_eligible
         and not hard_blocked
     )
     if blockers:

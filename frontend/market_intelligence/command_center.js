@@ -1,908 +1,429 @@
+/* Gold Trader — Command Center (operator cockpit)
+ * Easy on the surface, complicated underneath:
+ *  - one glanceable ENTER / WAIT hero from the corrected IFVG scout (live MT5)
+ *  - trade ticket with $30-risk lot sizing + 5R routed target
+ *  - candle chart with entry / stop / target overlays
+ *  - all engine detail (timeframe alignment, provider health, JSON, journal)
+ *    tucked behind a single "Engine details" toggle.
+ * Reads: /api/decision, /api/candles, /api/performance, /api/provider-health.
+ */
 (function () {
-  // Render dashboard mode. The local PC remains the authoritative trading/data engine.
   "use strict";
 
-  var TFs = ["D1", "H4", "H1", "M30", "M15", "M5", "M1"];
-  var candleSeq = 0;
+  var TF_LIST = ["H4", "H1", "M15", "M5"];
+  var REFRESH_MS = 10000;
   var state = {
-    page: "trade",
-    tf: "M15",
+    tf: "H1",
     decision: null,
-    health: null,
+    decisionErr: null,
     candles: [],
-    candleMeta: null,
-    loadError: null,
-    chartLoading: false,
-    readiness: null,
-    journal: null,
+    candleMeta: {},
+    perf: null,
+    health: null,
+    showAdv: false,
+    advTab: "alignment",
+    toast: null,
   };
 
-  function $(sel) {
-    return document.querySelector(sel);
-  }
-
+  /* ---------- helpers ---------- */
   function esc(s) {
-    return String(s == null ? "" : s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  function itemText(x) {
-    return typeof x === "string" ? x : JSON.stringify(x);
-  }
-
-  function fmt(n, d) {
-    d = d === undefined ? 2 : d;
-    if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
-    return Number(n).toLocaleString(undefined, {
-      maximumFractionDigits: d,
-      minimumFractionDigits: d,
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
     });
   }
-
-  function safe(v, f) {
-    f = f === undefined ? "—" : f;
-    return v === null || v === undefined || v === "" ? f : v;
-  }
-
-  function actionLabel(a) {
-    a = String(a || "WAIT").toUpperCase();
-    if (a.indexOf("HARD") >= 0) return "WAIT HARD BLOCK";
-    if (a.indexOf("TRADE_READY") >= 0) return "PAPER TRADE READY";
-    return a.replace(/_/g, " ");
-  }
-
-  function cloudSync(d) {
-    var sync = typeof d.cloud_sync === "string" ? { state: d.cloud_sync } : (d.cloud_sync || {});
-    var age = sync.age_seconds;
-    if (age === undefined && d.cloud_state_age_seconds !== undefined) {
-      age = d.cloud_state_age_seconds;
-      sync.age_seconds = age;
-    }
-    var stale = sync.state === "stale" || (age !== null && age !== undefined && Number(age) > 300);
-    if (!sync.state) {
-      sync.state = "missing";
-    }
-    sync.isStale = stale;
-    sync.label = stale ? "stale" : sync.state;
-    sync.message = sync.state === "fresh" ? "Cloud state fresh" : "LOCAL ENGINE NOT SYNCING";
-    return sync;
-  }
-
-  function isLocalAuthoritative(d) {
-    return d.source === "local_authoritative_engine";
-  }
-
-  function isNoValidState(d) {
-    return d.source === "no_valid_local_state" || d.action === "NO_VALID_STATE";
-  }
-
-  function sourceLabel(d) {
-    if (isLocalAuthoritative(d)) return "local authoritative engine";
-    if (isNoValidState(d)) return "no valid local state";
-    return d.source || ((d.cloud_status || {}).source) || "no valid local state";
-  }
-
-  function brokerLabel(d) {
-    if (isLocalAuthoritative(d)) return "MT5 bridge local";
-    return ((d.cloud_status || {}).broker) || "not synced";
-  }
-
-  function dataLabel(d) {
-    if (isLocalAuthoritative(d)) return "";
-    var provider = (d.cloud_status || {}).data_provider;
-    if (provider === "none") return "";
-    return provider && provider !== "local_authoritative_engine" ? provider + " chart preview only" : "";
-  }
-
-  function scoreMap(d) {
-    var sd = d.score_decomposition || {};
-    if (Array.isArray(sd)) {
-      var out = {};
-      for (var i = 0; i < sd.length; i++) {
-        var row = sd[i] || {};
-        out[row.key || row.label || String(i)] = row;
-      }
-      return out;
-    }
-    return sd;
-  }
-
-  function j(url) {
-    return fetch(url, { cache: "no-store" }).then(function (r) {
-      if (!r.ok) throw new Error(url + " " + r.status);
+  function num(v) { var n = Number(v); return Number.isFinite(n) ? n : null; }
+  function fmtPx(v) { var n = num(v); return n == null ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function getJSON(path) {
+    return fetch(path, { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error(path + " " + r.status);
       return r.json();
     });
   }
 
-  function renderLoading() {
+  /* ---------- styles (injected; namespaced gt-) ---------- */
+  function injectStyles() {
+    if (document.getElementById("gt-cc-style")) return;
+    var css = [
+      ":root{--bg:#05080c;--card:#0e1622;--card2:#0b121c;--line:#1b2a3b;--ink:#eaf1fb;--mut:#8a99ad;--gold:#f7c948;--green:#1fd18a;--red:#ff5d77;--amber:#f5b942;--blue:#6aa8ff}",
+      "*{box-sizing:border-box}",
+      "body{margin:0;background:radial-gradient(1200px 600px at 15% -10%,#142233 0,#070b11 45%,#04060a 100%);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,Arial,sans-serif}",
+      ".gt-wrap{max-width:1280px;margin:0 auto;padding:22px 26px 60px}",
+      ".gt-top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}",
+      ".gt-brand{display:flex;align-items:center;gap:13px}",
+      ".gt-coin{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#ffe27a,#b8851a);box-shadow:0 0 26px rgba(247,201,72,.35)}",
+      ".gt-brand h1{margin:0;font-size:17px;letter-spacing:.14em}.gt-brand p{margin:2px 0 0;font-size:10.5px;letter-spacing:.34em;color:var(--mut)}",
+      ".gt-badges{display:flex;gap:8px;flex-wrap:wrap;align-items:center}",
+      ".gt-badge{display:flex;align-items:center;gap:7px;border:1px solid var(--line);background:#0b121c;border-radius:999px;padding:8px 13px;font-size:12px;color:var(--mut)}",
+      ".gt-badge b{color:#fff;font-weight:600}",
+      ".gt-badge.lock{background:rgba(255,93,119,.12);border-color:rgba(255,93,119,.4);color:#ffd3db}",
+      ".gt-badge.live{background:rgba(31,209,138,.12);border-color:rgba(31,209,138,.4);color:#bff6e0}",
+      ".gt-badge.warn{background:rgba(245,185,66,.12);border-color:rgba(245,185,66,.4);color:#ffe9b8}",
+      ".gt-dot{width:8px;height:8px;border-radius:50%;background:var(--mut)}",
+      ".gt-dot.ok{background:var(--green);box-shadow:0 0 10px rgba(31,209,138,.7)}.gt-dot.bad{background:var(--red)}",
+      ".gt-refresh{cursor:pointer}",
+      ".gt-hero{position:relative;border:1px solid var(--line);border-radius:22px;padding:26px 28px;margin-bottom:18px;overflow:hidden;background:linear-gradient(180deg,#101b29,#0a121c)}",
+      ".gt-hero:before{content:'';position:absolute;top:0;bottom:0;left:0;width:7px}",
+      ".gt-hero.go:before{background:linear-gradient(var(--green),#0b8a5a)}.gt-hero.wait:before{background:linear-gradient(var(--amber),#a9791a)}.gt-hero.off:before{background:linear-gradient(var(--red),#a01f33)}",
+      ".gt-hero.go{box-shadow:0 0 0 1px rgba(31,209,138,.25),0 30px 80px rgba(0,0,0,.45)}",
+      ".gt-heroRow{display:grid;grid-template-columns:1fr 150px;gap:22px;align-items:center}",
+      ".gt-kicker{font-size:11px;letter-spacing:.3em;text-transform:uppercase;color:var(--gold)}",
+      ".gt-state{font-size:60px;line-height:1;font-weight:900;letter-spacing:.04em;margin:10px 0 6px}",
+      ".gt-state.go{color:var(--green)}.gt-state.wait{color:var(--amber)}.gt-state.off{color:var(--red)}",
+      ".gt-msg{color:#d6dfeb;max-width:760px;font-size:14.5px;line-height:1.5}",
+      ".gt-heroFacts{display:flex;gap:20px;margin-top:16px;flex-wrap:wrap}",
+      ".gt-hf{font-size:12px;color:var(--mut)}.gt-hf b{display:block;color:#fff;font-size:20px;margin-top:3px;font-weight:700}",
+      ".gt-ring{width:138px;height:138px;border-radius:50%;display:grid;place-items:center;padding:11px;background:conic-gradient(var(--gold) calc(var(--p)*1%),#1a2736 0)}",
+      ".gt-ringIn{width:100%;height:100%;border-radius:50%;background:#08111c;display:grid;place-items:center;text-align:center}",
+      ".gt-ringIn strong{font-size:32px}.gt-ringIn span{font-size:11px;color:var(--mut)}.gt-grade{font-size:13px;font-weight:800;letter-spacing:.1em;margin-top:4px}",
+      ".gt-grid{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:18px}",
+      ".gt-card{background:linear-gradient(180deg,var(--card),var(--card2));border:1px solid var(--line);border-radius:18px;overflow:hidden}",
+      ".gt-card h3{margin:0;padding:15px 18px;border-bottom:1px solid var(--line);font-size:11.5px;letter-spacing:.22em;text-transform:uppercase;color:#b9c6d6;display:flex;justify-content:space-between;align-items:center}",
+      ".gt-card .pad{padding:18px}",
+      ".gt-col{display:flex;flex-direction:column;gap:18px}",
+      ".gt-side{display:inline-flex;align-items:center;gap:9px;font-size:22px;font-weight:900;letter-spacing:.08em;padding:8px 16px;border-radius:12px}",
+      ".gt-side.buy{color:#bff6e0;background:rgba(31,209,138,.14);border:1px solid rgba(31,209,138,.4)}",
+      ".gt-side.sell{color:#ffd3db;background:rgba(255,93,119,.14);border:1px solid rgba(255,93,119,.4)}",
+      ".gt-side.none{color:var(--mut);background:#0b121c;border:1px solid var(--line)}",
+      ".gt-tk{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}",
+      ".gt-tkc{background:#0b1220;border:1px solid var(--line);border-radius:13px;padding:13px}.gt-tkc.full{grid-column:1/-1}",
+      ".gt-tkc span{display:block;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut)}",
+      ".gt-tkc b{display:block;margin-top:6px;font-size:19px;font-weight:700}",
+      ".gt-tkc.tp b{color:var(--green)}.gt-tkc.sl b{color:var(--red)}.gt-tkc.entry b{color:var(--gold)}",
+      ".gt-enter{width:100%;margin-top:16px;border:0;border-radius:14px;padding:16px;font-size:16px;font-weight:800;letter-spacing:.06em;cursor:pointer;color:#06140e;background:linear-gradient(135deg,#33e4a0,#11a874)}",
+      ".gt-enter:disabled{cursor:not-allowed;background:#101a27;color:#6b7a8e;border:1px solid var(--line)}",
+      ".gt-locknote{margin-top:10px;font-size:11.5px;color:#ffc6cf;text-align:center;letter-spacing:.04em}",
+      ".gt-why{list-style:none;margin:0;padding:0}",
+      ".gt-why li{display:flex;gap:11px;padding:11px 0;border-bottom:1px solid rgba(27,42,59,.6);font-size:13.5px;color:#d6dfeb}.gt-why li:last-child{border-bottom:0}",
+      ".gt-why .b{width:9px;height:9px;border-radius:50%;margin-top:5px;flex:0 0 auto;background:var(--mut)}",
+      ".gt-why .b.block{background:var(--red)}.gt-why .b.pass{background:var(--green)}.gt-why .b.warn{background:var(--amber)}",
+      ".gt-empty{color:var(--mut);font-size:13px;padding:6px 0}",
+      ".gt-facts{display:grid;grid-template-columns:1fr 1fr;gap:10px}",
+      ".gt-fact{background:#0b1220;border:1px solid var(--line);border-radius:12px;padding:11px 12px}",
+      ".gt-fact span{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut)}.gt-fact b{display:block;margin-top:5px;font-size:14px;font-weight:600}",
+      ".gt-tfbtns button{background:#0b121c;border:1px solid var(--line);color:#aebccd;border-radius:9px;padding:7px 11px;margin-left:6px;cursor:pointer;font-size:12px}",
+      ".gt-tfbtns button.active{background:var(--gold);color:#1a1200;border-color:var(--gold);font-weight:800}",
+      ".gt-chartmeta{font-size:11.5px;color:var(--mut);padding:10px 18px 0}",
+      "canvas{width:100%;height:330px;display:block}",
+      ".gt-advbar{margin-top:20px;display:flex;justify-content:center}",
+      ".gt-advtoggle{background:#0b121c;border:1px solid var(--line);color:#b9c6d6;border-radius:12px;padding:11px 20px;cursor:pointer;font-size:13px;letter-spacing:.06em}.gt-advtoggle:hover{border-color:var(--gold);color:#fff}",
+      ".gt-adv{margin-top:16px}",
+      ".gt-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}",
+      ".gt-tab{background:#0b121c;border:1px solid var(--line);color:var(--mut);border-radius:10px;padding:9px 14px;cursor:pointer;font-size:12.5px}",
+      ".gt-tab.active{background:rgba(247,201,72,.12);border-color:rgba(247,201,72,.4);color:#fff}",
+      ".gt-tfgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}",
+      ".gt-tfcell{background:#0b1220;border:1px solid var(--line);border-radius:13px;padding:13px}",
+      ".gt-tfcell.aligned{border-color:rgba(31,209,138,.45);box-shadow:inset 0 0 0 1px rgba(31,209,138,.08)}",
+      ".gt-tfcell h5{margin:0 0 8px;font-size:15px}.gt-tfcell p{margin:3px 0;font-size:12px;color:var(--mut)}",
+      ".gt-kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}",
+      ".gt-json{white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#aebccd;background:#05090f;border:1px solid var(--line);border-radius:13px;padding:15px;max-height:64vh;overflow:auto}",
+      ".gt-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#0e1b14;border:1px solid rgba(31,209,138,.5);color:#bff6e0;padding:13px 20px;border-radius:13px;box-shadow:0 18px 50px rgba(0,0,0,.5);font-size:13.5px;z-index:50}",
+      ".gt-syncbar{background:rgba(255,93,119,.14);border:1px solid rgba(255,93,119,.4);color:#ffd3db;border-radius:13px;padding:12px 16px;margin-bottom:16px;font-size:13px;letter-spacing:.04em}",
+      "@media(max-width:980px){.gt-grid{grid-template-columns:1fr}.gt-heroRow{grid-template-columns:1fr}}",
+    ].join("\n");
+    var s = document.createElement("style");
+    s.id = "gt-cc-style";
+    s.textContent = css;
+    document.head.appendChild(s);
+  }
+
+  /* ---------- data load ---------- */
+  function load() {
+    getJSON("/api/decision").then(function (d) { state.decision = d; state.decisionErr = null; })
+      .catch(function (e) { state.decisionErr = String(e.message || e); })
+      .then(function () { return loadCandles(state.tf); })
+      .then(function () { return getJSON("/api/performance").then(function (p) { state.perf = p; }).catch(function () {}); })
+      .then(function () { return getJSON("/api/provider-health").then(function (h) { state.health = h; }).catch(function () {}); })
+      .then(render).catch(render);
+  }
+  function loadCandles(tf) {
+    return getJSON("/api/candles?tf=" + encodeURIComponent(tf)).then(function (c) {
+      state.candles = (c && c.candles) || [];
+      state.candleMeta = c || {};
+    }).catch(function (e) { state.candles = []; state.candleMeta = { error: String(e.message || e) }; });
+  }
+
+  /* ---------- view-model ---------- */
+  function vm() {
+    var d = state.decision || {};
+    var noState = d.source === "no_valid_local_state" || d.action === "NO_VALID_STATE";
+    var canEnter = d.paper_allowed === true || /TRADE_READY/.test(String(d.action || ""));
+    var side = String(d.side || "none").toLowerCase();
+    var grade = d.final_grade || "—";
+    var score = num(d.final_score) || 0;
+    var entryLow = num(d.entry_low), entryHigh = num(d.entry_high);
+    var entry = entryLow != null && entryHigh != null ? (entryLow + entryHigh) / 2 : num(d.current_price);
+    var stop = num(d.stop_loss);
+    var target = num(d.tp1);
+    var risk = entry != null && stop != null ? Math.abs(entry - stop) : null;
+    var rr = risk && target != null && entry != null ? Math.abs(target - entry) / risk : num(d.rr_tp1);
+    var lot = risk ? Math.max(0.01, Math.round((30 / (risk * 100)) * 100) / 100) : null;
+    var st = noState ? "off" : canEnter ? "go" : "wait";
+    return {
+      d: d, noState: noState, canEnter: canEnter, side: side, grade: grade, score: score,
+      price: num(d.current_price), entry: entry, entryLow: entryLow, entryHigh: entryHigh,
+      stop: stop, target: target, risk: risk, rr: rr, lot: lot, st: st,
+      tpModel: d.tp_model, liveTrack: d.live_track === true,
+      blockers: d.blockers || [], reasons: d.reasons || [], watching: d.watching_for || [],
+      sync: d.cloud_sync, age: num(d.cloud_state_age_seconds),
+      source: (d.data_health || {}).data_source || (d.market_context || {}).data_provider || "—",
+      engine: d.engine || "—", liveLocked: !d.live_orders_enabled,
+    };
+  }
+
+  /* ---------- render ---------- */
+  function render() {
+    injectStyles();
+    var m = vm();
+    var stale = m.sync && m.sync !== "fresh";
     var root = document.getElementById("root");
     if (!root) return;
     root.innerHTML =
-      '<div class="app boot-shell" style="min-height:100vh;display:grid;place-items:center">' +
-      '<div style="text-align:center"><h2 style="letter-spacing:.16em;margin:0 0 12px">Gold Trader</h2>' +
-      '<p style="color:#92a0b2;margin:0">Loading command center…</p></div></div>';
-  }
-
-  function loadCandles(tf) {
-    state.tf = tf;
-    state.chartLoading = true;
-    var seq = ++candleSeq;
-    return j("/api/candles?tf=" + encodeURIComponent(tf))
-      .then(function (c) {
-        if (seq !== candleSeq) return;
-        state.chartLoading = false;
-        state.candles = c.candles || [];
-        state.candleMeta = c;
-        if (!state.candles.length) {
-          state.candleMeta = {
-            ok: false,
-            tf: tf,
-            error: (c && c.error) || "No candles returned for " + tf,
-            count: 0,
-          };
-        }
-      })
-      .catch(function (e) {
-        if (seq !== candleSeq) return;
-        state.chartLoading = false;
-        state.candles = [];
-        state.candleMeta = { ok: false, tf: tf, error: String(e), count: 0 };
-      })
-      .then(function () {
-        if (seq !== candleSeq) return;
-        if (state.page === "trade") render();
-        drawSoon();
-      });
-  }
-
-  function load() {
-    if (!state.decision) renderLoading();
-    state.loadError = null;
-    return Promise.all([
-      j("/api/decision").then(function (d) {
-        state.decision = d;
-      }),
-      j("/api/provider-health").then(function (h) {
-        state.health = h;
-      }),
-      j("/api/data-readiness")
-        .then(function (r) {
-          state.readiness = r;
-        })
-        .catch(function () {
-          state.readiness = null;
-        }),
-      j("/api/journal?limit=20")
-        .then(function (jrn) {
-          state.journal = jrn;
-        })
-        .catch(function () {
-          state.journal = { count: 0, rows: [] };
-        }),
-    ])
-      .catch(function (e) {
-        state.loadError = String(e);
-        console.error(e);
-      })
-      .then(function () {
-        render();
-        loadCandles(state.tf);
-      });
-  }
-
-  function nav(page) {
-    state.page = page;
-    render();
-    drawSoon();
-  }
-
-  function top(d) {
-    var age = d.source_age_status || {};
-    var sync = cloudSync(d);
-    var provider = dataLabel(d);
-    var syncProblem = isNoValidState(d) || sync.state !== "fresh";
-    var navItems = [
-      "trade:Trade Cockpit",
-      "market:Market Context",
-      "signal:Signal Engine",
-      "risk:Risk & Orders",
-      "journal:Journal",
-      "settings:Settings",
-      "json:Decision JSON",
-    ];
-    var ageSec = age.age_seconds;
-    var ageLabel = ageSec != null && ageSec !== "" ? ageSec : "—";
-    return (
-      '<aside class="side"><div class="brand"><div class="coin"></div><div><h1>Gold Trader</h1><p>RENDER DASHBOARD MODE</p></div></div><nav class="nav">' +
-      navItems
-        .map(function (x) {
-          var parts = x.split(":");
-          var k = parts[0];
-          var v = parts[1];
-          return (
-            '<a class="' +
-            (state.page === k ? "active" : "") +
-            '" href="#" data-page="' +
-            esc(k) +
-            '"><span>' +
-            esc(v) +
-            "</span>" +
-            (k === "trade" ? "<b>XAU</b>" : "") +
-            "</a>"
-          );
-        })
-        .join("") +
-      '</nav><div class="mini">Verdict <b>' +
-      esc(actionLabel(d.action)) +
-      "</b><br/>Score <b>" +
-      esc(safe(d.final_score, 0)) +
-      '/100</b><br/>Mode <b>' +
-      esc(((d.cloud_status || {}).execution_mode) || "paper") +
-      '</b><br/>Sync <b>' +
-      esc(sync.label || "missing") +
-      '</b></div></aside><main class="main"><div class="top"><div class="title"><h2>Gold Trader Command Center</h2><p>RENDER DASHBOARD MODE · Source: ' +
-      esc(sourceLabel(d)) +
-      ' · Orders locked.</p></div><div class="chips"><span class="chip">Symbol <b>' +
-      esc(safe(d.symbol, "XAUUSD")) +
-      '</b></span><span class="chip">Source <b>' +
-      esc(sourceLabel(d)) +
-      '</b></span><span class="chip">Broker <b>' +
-      esc(brokerLabel(d)) +
-      '</b></span><span class="chip lock">Orders <b>' +
-      esc("locked") +
-      '</b></span><span class="chip"><i class="dot ' +
-      esc(sync.isStale || sync.state === "missing" ? "warning" : "ok") +
-      '"></i> Cloud sync <b>' +
-      esc(sync.label || "missing") +
-      '</b></span><span class="chip"><i class="dot ' +
-      esc(age.severity || "warning") +
-      '"></i> ' +
-      esc(age.label || "unknown") +
-      '</span>' +
-      (provider ? '<span class="chip">Data <b>' + esc(provider) + '</b></span>' : "") +
-      '<button type="button" class="chip ok" id="gt-refresh">Refresh</button></div></div>' +
-      (syncProblem ? '<div class="brief danger" style="margin-bottom:18px">' + esc(sync.message) + "</div>" : "")
-    );
-  }
-
-  function hero(d) {
-    var sd = scoreMap(d);
-    var ageSec = (d.source_age_status || {}).age_seconds;
-    var ageLabel = ageSec != null && ageSec !== "" ? ageSec : "—";
-    return (
-      '<section class="card hero"><div class="heroRow"><div><div class="label">Live Verdict</div><div class="verdict">' +
-      esc(actionLabel(d.action)) +
-      "</div><div class=\"meta\">" +
-      esc(safe(d.symbol, "XAUUSD")) +
-      " · " +
-      esc(String(d.side || "none").toUpperCase()) +
-      " · Grade " +
-      esc(safe(d.final_grade, "—")) +
-      " · Source age " +
-      esc(ageLabel) +
-      's</div><div class="brief">' +
-      esc(safe(d.next_update, "Waiting for a fresh full-system scan.")) +
-      '</div></div><div class="scoreRing" style="--score:' +
-      Math.max(0, Math.min(100, Number(d.final_score || 0))) +
-      '"><div class="scoreInner"><div><strong>' +
-      esc(safe(d.final_score, 0)) +
-      '</strong><br/><span>/100</span><br/><small>' +
-      esc(safe(d.final_grade, "—")) +
-      '</small></div></div></div></div><div class="stats"><div class="stat"><span>Current</span><b>' +
-      esc(fmt(d.current_price)) +
-      '</b></div><div class="stat"><span>Entry</span><b>' +
-      esc(fmt(d.entry_low)) +
-      " – " +
-      esc(fmt(d.entry_high)) +
-      '</b></div><div class="stat"><span>Stop</span><b>' +
-      esc(fmt(d.stop_loss)) +
-      '</b></div><div class="stat"><span>Targets</span><b>' +
-      esc(fmt(d.tp1)) +
-      " / " +
-      esc(fmt(d.tp2)) +
-      " / " +
-      esc(fmt(d.tp3)) +
-      '</b></div></div><div class="scoreGrid">' +
-      Object.keys(sd)
-        .map(function (k) {
-          var v = sd[k] || {};
-          return (
-            '<div class="scoreBox ' +
-            (Number(v.score || 0) === 0 ? "bad" : "ok") +
-            '"><div class="name">' +
-            esc(v.label || k) +
-            '</div><div class="num">' +
-            esc(v.score || 0) +
-            "<small>/" +
-            esc(v.max || 0) +
-            "</small></div></div>"
-          );
-        })
-        .join("") +
+      '<div class="gt-wrap">' +
+        topBar(m) +
+        (stale ? '<div class="gt-syncbar">LOCAL ENGINE NOT SYNCING — last known state (' + esc(m.sync) + (m.age != null ? ", " + m.age + "s old" : "") + ")</div>" : "") +
+        hero(m) +
+        '<div class="gt-grid">' +
+          '<div class="gt-col">' + ticketCard(m) + chartCard() + "</div>" +
+          '<div class="gt-col">' + whyCard(m) + factsCard(m) + "</div>" +
+        "</div>" +
+        advSection(m) +
       "</div>" +
-      (d.data_quality_penalty
-        ? '<div class="brief danger">-' +
-          esc(d.data_quality_penalty) +
-          " pts data-quality penalty. Missing: " +
-          esc(
-            (d.missing_inputs || [])
-              .map(function (x) {
-                return typeof x === "string" ? x : x.label || "";
-              })
-              .join(", ")
-          ) +
-          "</div>"
-        : "") +
-      "</section>"
-    );
+      (state.toast ? '<div class="gt-toast">' + esc(state.toast) + "</div>" : "");
+    wire(m);
+    drawChart(m);
   }
 
-  function drawSoon() {
-    requestAnimationFrame(function () {
-      requestAnimationFrame(draw);
-    });
+  function topBar(m) {
+    var live = m.liveLocked
+      ? '<span class="gt-badge lock"><span class="gt-dot bad"></span>Orders <b>LOCKED</b></span>'
+      : '<span class="gt-badge live"><span class="gt-dot ok"></span>Orders <b>LIVE</b></span>';
+    var srcOk = /bridge|mt5|live/i.test(m.source);
+    return '<div class="gt-top">' +
+      '<div class="gt-brand"><div class="gt-coin"></div><div><h1>GOLD TRADER</h1><p>COMMAND CENTER · PAPER</p></div></div>' +
+      '<div class="gt-badges">' +
+        '<span class="gt-badge"><b>XAUUSD</b></span>' +
+        '<span class="gt-badge ' + (srcOk ? "live" : "warn") + '"><span class="gt-dot ' + (srcOk ? "ok" : "") + '"></span>' + (srcOk ? "Live MT5" : "Source") + ' <b>' + esc(m.source) + "</b></span>" +
+        '<span class="gt-badge ' + (m.sync === "fresh" ? "" : "warn") + '">Sync <b>' + esc(m.sync || "—") + "</b></span>" +
+        live +
+        '<span class="gt-badge gt-refresh" id="gt-refresh"><span class="gt-dot ok"></span>Refresh</span>' +
+      "</div></div>";
   }
 
-  function chartStatusLine() {
-    if (state.chartLoading) {
-      return "Loading " + esc(state.tf) + " candles…";
+  function hero(m) {
+    var word = m.st === "go" ? "ENTER" : m.st === "off" ? "NO SIGNAL" : (m.d.action === "WAIT" && m.side !== "none" ? "WAIT" : "SCANNING");
+    var kick = m.st === "go" ? "Tradeable setup — manual approval" : m.st === "off" ? "Engine state" : "AI is watching the tape";
+    var msg;
+    if (m.st === "go") {
+      msg = "Grade " + esc(m.grade) + " " + m.side.toUpperCase() + " is ready. Stop is 1R just outside the IFVG; target is the " +
+        esc(m.tpModel || "5R") + " runner" + (m.rr ? " (" + m.rr.toFixed(1) + "R)" : "") + ". " +
+        (m.liveTrack ? "Counts toward the live go/no-go." : "PAPER ONLY — excluded from the live go/no-go.");
+    } else if (m.noState) {
+      msg = "No fresh local decision. Start the engine: bash scripts/local_up_8766.sh";
+    } else if (m.blockers && m.blockers.length) {
+      msg = esc(m.blockers[0]);
+    } else {
+      msg = "Scanning live bars for the next IFVG setup (sweep → displacement → inversion → retest).";
     }
+    return '<div class="gt-hero ' + m.st + '"><div class="gt-heroRow"><div>' +
+        '<div class="gt-kicker">' + esc(kick) + "</div>" +
+        '<div class="gt-state ' + m.st + '">' + esc(word) + "</div>" +
+        '<div class="gt-msg">' + msg + "</div>" +
+        '<div class="gt-heroFacts">' +
+          '<div class="gt-hf">Live price<b>' + fmtPx(m.price) + "</b></div>" +
+          '<div class="gt-hf">Side<b>' + (m.side === "none" ? "—" : m.side.toUpperCase()) + "</b></div>" +
+          '<div class="gt-hf">Timeframe<b>' + esc(m.d.timeframe || "1H") + "</b></div>" +
+          '<div class="gt-hf">Risk<b>$30</b></div>' +
+        "</div>" +
+      "</div>" +
+      '<div class="gt-ring" style="--p:' + Math.max(0, Math.min(100, m.score)) + '"><div class="gt-ringIn"><div><strong>' + esc(m.score) + "</strong><br><span>/100</span><div class=\"gt-grade\">GRADE " + esc(m.grade) + "</div></div></div></div>" +
+      "</div></div>";
+  }
+
+  function ticketCard(m) {
+    var sideCls = m.side === "buy" ? "buy" : m.side === "sell" ? "sell" : "none";
+    var sideTxt = m.side === "buy" ? "▲ BUY" : m.side === "sell" ? "▼ SELL" : "NO SIDE";
+    var rows =
+      '<div class="gt-tkc entry"><span>Entry zone</span><b>' + (m.entryLow != null ? fmtPx(m.entryLow) + " – " + fmtPx(m.entryHigh) : fmtPx(m.entry)) + "</b></div>" +
+      '<div class="gt-tkc sl"><span>Stop (1R)</span><b>' + fmtPx(m.stop) + "</b></div>" +
+      '<div class="gt-tkc tp"><span>Target · ' + esc(m.tpModel || "5R") + '</span><b>' + fmtPx(m.target) + "</b></div>" +
+      '<div class="gt-tkc"><span>Reward : Risk</span><b>' + (m.rr ? m.rr.toFixed(1) + "R" : "—") + "</b></div>" +
+      '<div class="gt-tkc"><span>Lot @ $30 risk</span><b>' + (m.lot != null ? m.lot.toFixed(2) : "—") + "</b></div>" +
+      '<div class="gt-tkc full"><span>Track</span><b>' + (m.liveTrack ? "Live go/no-go" : "Paper only") + "</b></div>";
+    var btn = '<button class="gt-enter" id="gt-enter"' + (m.canEnter ? "" : " disabled") + ">" +
+      (m.canEnter ? "Mark Paper Entry" : (m.side === "none" ? "No setup" : "Waiting for green")) + "</button>";
+    var lock = '<div class="gt-locknote">🔒 Live orders locked — paper collection only. Manual approval required.</div>';
+    return '<div class="gt-card"><h3>Trade Ticket</h3><div class="pad">' +
+      '<span class="gt-side ' + sideCls + '">' + sideTxt + "</span>" +
+      '<div class="gt-tk">' + rows + "</div>" + btn + lock + "</div></div>";
+  }
+
+  function whyCard(m) {
+    var title = m.canEnter ? "Why it's green" : "What we're waiting for";
+    var items = [];
+    if (m.canEnter) {
+      (m.reasons || []).slice(0, 6).forEach(function (r) { items.push(["pass", r]); });
+      if (!items.length) items.push(["pass", "Grade " + m.grade + " " + m.side.toUpperCase() + " passes all gates."]);
+    } else {
+      (m.blockers || []).slice(0, 6).forEach(function (b) { items.push(["block", b]); });
+      (m.watching || []).slice(0, 3).forEach(function (w) { items.push(["warn", w]); });
+      if (!items.length) items.push(["warn", "Scanning — no blockers, no setup yet."]);
+    }
+    var li = items.map(function (it) { return '<li><span class="b ' + it[0] + '"></span><span>' + esc(it[1]) + "</span></li>"; }).join("");
+    return '<div class="gt-card"><h3>' + esc(title) + '</h3><div class="pad"><ul class="gt-why">' + li + "</ul></div></div>";
+  }
+
+  function factsCard(m) {
+    function f(label, val) { return '<div class="gt-fact"><span>' + esc(label) + "</span><b>" + esc(val) + "</b></div>"; }
+    var ls = m.d.live_sentiment || {};
+    return '<div class="gt-card"><h3>Key Facts</h3><div class="pad"><div class="gt-facts">' +
+      f("Grade", m.grade) + f("Score", m.score + "/100") +
+      f("Engine", m.engine) + f("Data", m.source) +
+      f("Macro regime", ls.macro_regime || "—") + f("Sync age", m.age != null ? m.age + "s" : "—") +
+      "</div></div></div>";
+  }
+
+  function chartCard() {
     var meta = state.candleMeta || {};
-    if (meta.ok === false || !(state.candles && state.candles.length)) {
-      return '<span class="danger">' + esc(meta.error || "feed error") + "</span>";
-    }
-    var providerLabel = (meta.provider || meta.source || "chart preview").toString();
-    // If provider is a known preview-only source (e.g., Yahoo), make the preview-only note explicit
-    var lower = providerLabel.toLowerCase();
-    if (lower.indexOf("yahoo") >= 0 || lower.indexOf("gc_futures") >= 0) {
-      providerLabel = "Chart preview only — not trading state";
-    }
-    var line =
-      esc(meta.count || state.candles.length) +
-      " candles · " +
-      esc(providerLabel) +
-      " · chart preview only";
-    if (meta.cache_note) {
-      line += ' · <span class="amber">' + esc(meta.cache_note) + "</span>";
-    }
-    return line;
+    var btns = TF_LIST.map(function (t) {
+      return '<button class="' + (t === state.tf ? "active" : "") + '" data-tf="' + t + '">' + t + "</button>";
+    }).join("");
+    var note = meta.count != null
+      ? esc(meta.count) + " candles · " + esc(meta.provider || meta.source || "feed") + (meta.chart_preview_only ? " · chart preview only" : "")
+      : (meta.error ? esc(meta.error) : "loading…");
+    return '<div class="gt-card"><h3>Chart <span class="gt-tfbtns">' + btns + "</span></h3>" +
+      '<div class="gt-chartmeta">' + note + "</div>" +
+      '<canvas id="gt-canvas" width="900" height="330"></canvas></div>';
   }
 
-  function noValidStatePage(d) {
-    var sync = cloudSync(d);
-    return (
-      '<section class="card hero"><div class="heroRow"><div><div class="label">LOCAL ENGINE NOT SYNCING</div><div class="verdict">NO VALID STATE</div><div class="meta">Render is dashboard-only · Orders locked</div><div class="brief danger">No valid trading state. Start local PC stack and sync state.</div><div class="brief">' +
-      esc((d.reasons || ["Render is dashboard-only and cannot compute trading decisions"]).join(" ")) +
-      '</div></div><div class="scoreRing" style="--score:0"><div class="scoreInner"><div><strong>0</strong><br/><span>/100</span><br/><small>' +
-      esc(sync.label || "missing") +
-      '</small></div></div></div></div></section><section class="panel" style="margin-top:14px"><h4>Sync Required</h4><div class="body contextGrid"><div class="ctx"><span>Cloud Sync</span><b class="danger">' +
-      esc(sync.label || "missing") +
-      '</b></div><div class="ctx"><span>Broker</span><b>not connected</b></div><div class="ctx"><span>Orders</span><b class="amber">locked</b></div><div class="ctx"><span>Trading State</span><b class="danger">unavailable</b></div></div></section>'
-    );
+  function advSection(m) {
+    var toggle = '<div class="gt-advbar"><button class="gt-advtoggle" id="gt-adv">' +
+      (state.showAdv ? "▲ Hide engine details" : "▼ Show engine details (timeframes · health · journal · JSON)") + "</button></div>";
+    if (!state.showAdv) return toggle;
+    var tabs = [["alignment", "Timeframes"], ["health", "Provider health"], ["journal", "Journal"], ["json", "Decision JSON"]];
+    var tabBtns = tabs.map(function (t) {
+      return '<button class="gt-tab ' + (state.advTab === t[0] ? "active" : "") + '" data-tab="' + t[0] + '">' + t[1] + "</button>";
+    }).join("");
+    var body = state.advTab === "alignment" ? advAlignment(m)
+      : state.advTab === "health" ? advHealth()
+      : state.advTab === "journal" ? advJournal()
+      : advJSON(m);
+    return toggle + '<div class="gt-adv"><div class="gt-tabs">' + tabBtns + "</div>" + body + "</div>";
   }
 
-  function chart() {
-    var meta = state.candleMeta || {};
-    return (
-      '<section class="card"><div class="chartHead"><h3 style="border:0;padding:0">Live Candlestick Workbench</h3><div class="tfBtns">' +
-      TFs.map(function (tf) {
-        return (
-          '<button type="button" class="' +
-          (state.tf === tf ? "active" : "") +
-          '" data-tf="' +
-          esc(tf) +
-          '">' +
-          esc(tf) +
-          "</button>"
-        );
-      }).join("") +
-      '</div></div><div class="chartMeta">' +
-      esc(state.tf) +
-      " · " +
-      chartStatusLine() +
-      " · Volume note: " +
-      esc(meta.volume_note || "—") +
-      '</div><canvas id="chart" width="1100" height="420"></canvas></section>'
-    );
+  function advAlignment(m) {
+    var reads = m.d.timeframe_reads || [];
+    if (!reads.length) return '<div class="gt-card"><div class="pad gt-empty">No timeframe reads in current decision.</div></div>';
+    var cells = reads.map(function (r) {
+      var aligned = r.aligned || (num(r.score) || 0) >= 50;
+      return '<div class="gt-tfcell ' + (aligned ? "aligned" : "") + '"><h5>' + esc(r.timeframe || "TF") + "</h5>" +
+        "<p>Bias: " + esc(r.bias || "—") + "</p><p>IFVG: " + esc(r.ifvg_side || "none") + "</p><p>Score: " + esc(num(r.score) || 0) + "</p></div>";
+    }).join("");
+    return '<div class="gt-card"><h3>Timeframe Alignment</h3><div class="pad"><div class="gt-tfgrid">' + cells + "</div></div></div>";
   }
 
-  function draw() {
-    var c = $("#chart");
-    if (!c || !state.candles || !state.candles.length || state.chartLoading) return;
-    var data = state.candles.filter(function (row) {
-      return (
-        Number.isFinite(Number(row.high)) &&
-        Number.isFinite(Number(row.low)) &&
-        Number.isFinite(Number(row.open)) &&
-        Number.isFinite(Number(row.close))
-      );
+  function advHealth() {
+    var h = state.health || {};
+    function f(label, val) { return '<div class="gt-fact"><span>' + esc(label) + "</span><b>" + esc(val) + "</b></div>"; }
+    var rows = "";
+    Object.keys(h).filter(function (k) { return typeof h[k] !== "object"; }).slice(0, 12).forEach(function (k) { rows += f(k, h[k]); });
+    if (!rows) rows = '<div class="gt-empty">Provider health (chart/context enrichment only — does not gate the decision).</div>';
+    return '<div class="gt-card"><h3>Provider Health <span style="font-size:10px;color:var(--mut)">enrichment only</span></h3><div class="pad"><div class="gt-kv">' + rows + "</div></div></div>";
+  }
+
+  function advJournal() {
+    var p = state.perf || {};
+    function f(label, val) { return '<div class="gt-fact"><span>' + esc(label) + "</span><b>" + esc(val) + "</b></div>"; }
+    var rows = f("Total signals", p.total_signals != null ? p.total_signals : "—") +
+      f("Closed", p.closed_signals != null ? p.closed_signals : "—") +
+      f("Open", p.open_signals != null ? p.open_signals : "—") +
+      f("TP1 hit-rate", p.tp1_hit_rate != null ? (p.tp1_hit_rate * 100).toFixed(0) + "%" : "—") +
+      f("Expectancy R", p.expectancy_r != null ? p.expectancy_r : "—") +
+      f("Avg adverse R", p.average_max_adverse_r != null ? p.average_max_adverse_r : "—");
+    return '<div class="gt-card"><h3>Paper Journal · 20-trade go/no-go</h3><div class="pad"><div class="gt-kv">' + rows +
+      '</div><p class="gt-empty" style="margin-top:12px">Live promotion gate: 20+ forward Grade-A trades, 60%+ WR, positive R. Grade-B 4H logged but excluded.</p></div></div>';
+  }
+
+  function advJSON(m) {
+    return '<div class="gt-card"><h3>Decision JSON</h3><div class="pad"><div class="gt-json">' + esc(JSON.stringify(m.d, null, 2)) + "</div></div></div>";
+  }
+
+  /* ---------- interactions ---------- */
+  function wire(m) {
+    var r = document.getElementById("gt-refresh"); if (r) r.onclick = load;
+    var a = document.getElementById("gt-adv"); if (a) a.onclick = function () { state.showAdv = !state.showAdv; render(); };
+    Array.prototype.forEach.call(document.querySelectorAll("[data-tab]"), function (b) {
+      b.onclick = function () { state.advTab = b.getAttribute("data-tab"); render(); };
     });
-    if (!data.length) return;
-    data = data.slice(-180);
-    var ctx = c.getContext("2d");
-    var W = c.width;
-    var H = c.height;
-    var p = 28;
+    Array.prototype.forEach.call(document.querySelectorAll("[data-tf]"), function (b) {
+      b.onclick = function () { state.tf = b.getAttribute("data-tf"); loadCandles(state.tf).then(render); };
+    });
+    var e = document.getElementById("gt-enter");
+    if (e && m.canEnter) e.onclick = function () {
+      state.toast = "Paper entry noted — " + m.side.toUpperCase() + " " + fmtPx(m.entry) + " · SL " + fmtPx(m.stop) + " · TP " + fmtPx(m.target) + " · " + (m.lot ? m.lot.toFixed(2) : "?") + " lot.";
+      render();
+      setTimeout(function () { state.toast = null; render(); }, 5000);
+    };
+  }
+
+  /* ---------- candle chart ---------- */
+  function drawChart(m) {
+    var cv = document.getElementById("gt-canvas");
+    if (!cv) return;
+    var rows = (state.candles || []).filter(function (k) {
+      return Number.isFinite(Number(k.open)) && Number.isFinite(Number(k.high)) && Number.isFinite(Number(k.low)) && Number.isFinite(Number(k.close));
+    });
+    var dpr = window.devicePixelRatio || 1;
+    var W = cv.clientWidth || 900, H = 330;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var ctx = cv.getContext("2d"); ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#071019";
-    ctx.fillRect(0, 0, W, H);
-    var hi = Math.max.apply(
-      null,
-      data.map(function (x) {
-        return Number(x.high);
-      })
-    );
-    var lo = Math.min.apply(
-      null,
-      data.map(function (x) {
-        return Number(x.low);
-      })
-    );
-    function y(v) {
-      return p + ((hi - v) / (hi - lo || 1)) * (H - p * 2);
+    if (!rows.length) {
+      ctx.fillStyle = "#5b6b7e"; ctx.font = "14px Inter,sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("No candles for " + state.tf, W / 2, H / 2); return;
     }
-    function x(i) {
-      return p + (i * (W - p * 2)) / Math.max(1, data.length - 1);
+    rows = rows.slice(-120);
+    var overlays = [];
+    if (m.entry != null) overlays.push(m.entry);
+    if (m.stop != null) overlays.push(m.stop);
+    if (m.target != null) overlays.push(m.target);
+    var hi = -Infinity, lo = Infinity;
+    rows.forEach(function (k) { hi = Math.max(hi, Number(k.high)); lo = Math.min(lo, Number(k.low)); });
+    overlays.forEach(function (v) { hi = Math.max(hi, v); lo = Math.min(lo, v); });
+    var padTop = 14, padBot = 18, padR = 64, padL = 8;
+    var span = hi - lo || 1; hi += span * 0.04; lo -= span * 0.04; span = hi - lo;
+    function y(v) { return padTop + (hi - v) / span * (H - padTop - padBot); }
+    var cw = (W - padL - padR) / rows.length;
+    ctx.strokeStyle = "rgba(27,42,59,.6)"; ctx.fillStyle = "#5f6f82"; ctx.font = "10px ui-monospace,monospace"; ctx.textAlign = "left";
+    for (var g = 0; g <= 4; g++) {
+      var gv = hi - (span * g / 4), gy = y(gv);
+      ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(W - padR, gy); ctx.stroke();
+      ctx.fillText(gv.toFixed(1), W - padR + 6, gy + 3);
     }
-    ctx.strokeStyle = "#162334";
-    ctx.lineWidth = 1;
-    for (var i = 0; i < 6; i++) {
-      var yy = p + (i * (H - p * 2)) / 5;
-      ctx.beginPath();
-      ctx.moveTo(p, yy);
-      ctx.lineTo(W - p, yy);
-      ctx.stroke();
-    }
-    data.forEach(function (k, idx) {
-      var xx = x(idx);
-      var o = y(Number(k.open));
-      var h = y(Number(k.high));
-      var l = y(Number(k.low));
-      var cl = y(Number(k.close));
+    rows.forEach(function (k, i) {
+      var o = y(Number(k.open)), h = y(Number(k.high)), l = y(Number(k.low)), c = y(Number(k.close));
       var up = Number(k.close) >= Number(k.open);
-      ctx.strokeStyle = up ? "#16d68f" : "#ff5470";
-      ctx.fillStyle = ctx.strokeStyle;
-      ctx.beginPath();
-      ctx.moveTo(xx, h);
-      ctx.lineTo(xx, l);
-      ctx.stroke();
-      var bw = Math.max(2, ((W - p * 2) / data.length) * 0.55);
-      ctx.fillRect(xx - bw / 2, Math.min(o, cl), bw, Math.max(1, Math.abs(cl - o)));
+      var x = padL + i * cw + cw / 2;
+      ctx.strokeStyle = up ? "#1fd18a" : "#ff5d77"; ctx.fillStyle = up ? "#1fd18a" : "#ff5d77";
+      ctx.beginPath(); ctx.moveTo(x, h); ctx.lineTo(x, l); ctx.stroke();
+      var bw = Math.max(1, cw * 0.6);
+      var top = Math.min(o, c), bh = Math.max(1, Math.abs(c - o));
+      ctx.globalAlpha = 0.9; ctx.fillRect(x - bw / 2, top, bw, bh); ctx.globalAlpha = 1;
     });
-    ctx.fillStyle = "#94a3b8";
-    ctx.font = "12px ui-monospace";
-    ctx.fillText(fmt(hi), W - 80, p + 8);
-    ctx.fillText(fmt(lo), W - 80, H - p);
-  }
-
-  function lists(d) {
-    return (
-      '<div class="right"><div class="panel control"><h4>Operator Control</h4><div class="body"><b>' +
-      esc(d.live_orders_enabled ? "LIVE ORDERS OPEN" : "LIVE ORDERS LOCKED") +
-      "</b><p>" +
-      esc(
-        d.live_orders_enabled
-          ? "Execution is enabled. Confirm broker/spread before firing."
-          : "Paper/alert only. Live execution cannot fire from this UI."
-      ) +
-      "</p></div></div>" +
-      readinessPanel(d) +
-      '<div class="panel"><h4>Watching For</h4><div class="body"><ul>' +
-      ((d.watching_for || [])
-        .map(function (x) {
-          return "<li>" + esc(itemText(x)) + "</li>";
-        })
-        .join("") || "<li>No active checklist</li>") +
-      '</ul></div></div><div class="panel"><h4>Why</h4><div class="body"><ul>' +
-      ((d.readable_reasons || [])
-        .map(function (x) {
-          return "<li>" + esc(itemText(x)) + "</li>";
-        })
-        .join("") || "<li>No items</li>") +
-      '</ul></div></div><div class="panel"><h4>Blockers</h4><div class="body"><ul>' +
-      ((d.readable_blockers || [])
-        .map(function (x) {
-          return "<li>" + esc(itemText(x)) + "</li>";
-        })
-        .join("") || "<li>No blockers</li>") +
-      "</ul></div></div>" +
-      contextPanel(d) +
-      "</div>"
-    );
-  }
-
-  function readinessPanel(d) {
-    var readiness = state.readiness || d.data_readiness_summary || {};
-    var actions = readiness.actions || [];
-    return (
-      '<div class="panel"><h4>Operational Gaps</h4><div class="body"><div class="contextGrid"><div class="ctx"><span>State</span><b class="' +
-      (readiness.state === "ready" ? "okText" : "amber") +
-      '">' +
-      esc(readiness.state || "unknown") +
-      '</b></div><div class="ctx"><span>Actions</span><b>' +
-      esc(safe(readiness.actionable_count, 0)) +
-      '</b></div></div><ul>' +
-      (actions.length
-        ? actions
-            .slice(0, 7)
-            .map(function (x) {
-              return (
-                "<li><b>" +
-                esc(x.label || x.key) +
-                ":</b> " +
-                esc(x.action || x.message || x.state || "review") +
-                "</li>"
-              );
-            })
-            .join("")
-        : "<li>No operational gaps</li>") +
-      "</ul></div></div>"
-    );
-  }
-
-  function feedLabel(value) {
-    var text = String(value == null ? "unknown" : value).toLowerCase();
-    if (text === "dead") return "compressed";
-    if (text === "unknown_nonfatal_in_paper") return "unavailable (paper)";
-    if (text === "ok_no_high_impact") return "clear (no high-impact events)";
-    return String(value == null ? "unknown" : value);
-  }
-
-  function contextPanel(d) {
-    var m = d.market_intelligence_summary || {};
-    var c = d.cloud_status || {};
-    return (
-      '<div class="panel"><h4>Live Context</h4><div class="body contextGrid"><div class="ctx"><span>Analysis</span><b class="okText">online</b></div><div class="ctx"><span>Candles</span><b>' +
-      esc(safe(c.candles_loaded, "—")) +
-      '</b></div><div class="ctx"><span>Provider</span><b>' +
-      esc(safe(c.data_provider, "—")) +
-      '</b></div><div class="ctx"><span>Volatility</span><b>' +
-      esc(feedLabel(safe(m.volatility, "unknown"))) +
-      '</b></div><div class="ctx"><span>Spread</span><b class="' +
-      (String(m.spread || "").indexOf("unknown") >= 0 ? "amber" : "") +
-      '">' +
-      esc(feedLabel(safe(m.spread, "unknown"))) +
-      '</b></div><div class="ctx"><span>Macro</span><b class="' +
-      (m.macro === "unknown" ? "amber" : "") +
-      '">' +
-      esc(feedLabel(safe(m.macro, "unknown"))) +
-      '</b></div><div class="ctx"><span>Sentiment</span><b>' +
-      esc(safe(m.sentiment, "unknown")) +
-      '</b></div><div class="ctx"><span>Orders</span><b class="amber">' +
-      esc(d.live_orders_enabled ? "open" : "locked") +
-      '</b></div><div class="ctx"><span>CME</span><b>' +
-      esc(safe(m.cme, "not_connected")) +
-      '</b></div><div class="ctx"><span>Options</span><b>' +
-      esc(safe(m.options, "not_connected")) +
-      '</b></div><div class="ctx"><span>COT</span><b>' +
-      esc(feedLabel(safe(m.cot, "unknown"))) +
-      '</b></div><div class="ctx"><span>DXY / Yields / VIX</span><b>' +
-      esc(feedLabel(safe(m.cross_market, "unknown"))) +
-      "</b></div></div></div>"
-    );
-  }
-
-  function tfGrid(d) {
-    var t = d.tf_align || {};
-    return (
-      '<section class="card wide"><h3>Timeframe Alignment</h3><div class="tfGrid">' +
-      TFs.map(function (tf) {
-        var r = t[tf] || {};
-        return (
-          '<div class="tfCard ' +
-          (r.aligned ? "aligned" : "") +
-          '"><h5>' +
-          esc(tf) +
-          "</h5><p>Bias: " +
-          esc(safe(r.bias, "—")) +
-          "</p><p>IFVG: " +
-          esc(safe(r.ifvg_side, "—")) +
-          "</p><p>Score: " +
-          esc(safe(r.score, "—")) +
-          "</p><p>Candles: " +
-          esc(safe(r.candles, 0)) +
-          (r.data_state === "unavailable" ? ' <span class="amber">(feed unavailable)</span>' : "") +
-          "</p></div>"
-        );
-      }).join("") +
-      "</div></section>"
-    );
-  }
-
-  function tradePage(d) {
-    return (
-      '<div class="grid"><div>' +
-      hero(d) +
-      '<div style="height:16px"></div>' +
-      chart() +
-      "</div>" +
-      lists(d) +
-      tfGrid(d) +
-      "</div>"
-    );
-  }
-
-  function marketLevels(d) {
-    var summary = d.market_levels_summary || {};
-    var levels = summary.levels || [];
-    return (
-      '<section class="card wide"><h3>Options / OI Levels</h3><div class="tfGrid">' +
-      (levels.length
-        ? levels
-            .slice(0, 12)
-            .map(function (level) {
-              var distance = level.distance_points;
-              return (
-                '<div class="tfCard"><h5>' +
-                esc(fmt(level.price, 2)) +
-                "</h5><p>" +
-                esc(level.kind || "level") +
-                (level.strength ? " · " + esc(level.strength) : "") +
-                "</p><p>" +
-                esc(level.label || "Manual market level") +
-                "</p><p>Distance: " +
-                esc(distance === undefined || distance === null ? "—" : fmt(distance, 2)) +
-                "</p><p>" +
-                esc(summary.state || "missing") +
-                " · " +
-                esc(summary.source || "none") +
-                "</p></div>"
-              );
-            })
-            .join("")
-        : '<div class="tfCard"><h5>No Levels</h5><p>' +
-          esc(summary.state || "missing") +
-          "</p><p>" +
-          esc(summary.source || "config/market_levels.json") +
-          "</p></div>") +
-      "</div></section>"
-    );
-  }
-
-  function marketPage(d) {
-    var ph = state.health || d.provider_health_summary || {};
-    function providerDetail(v) {
-      var parts = [];
-      if (v.source) parts.push("Source: " + v.source);
-      if (v.configured !== undefined) parts.push("Configured: " + (v.configured ? "yes" : "no"));
-      if (v.age_seconds !== undefined && v.age_seconds !== null) parts.push("Age: " + v.age_seconds + "s");
-      if (v.latency_ms !== undefined && v.latency_ms !== null) parts.push("Latency: " + v.latency_ms + "ms");
-      if (v.required_env && v.required_env.length) parts.push("Needs: " + v.required_env.join(", "));
-      if (v.message) parts.push(v.message);
-      return parts;
+    function line(v, color, label) {
+      if (v == null) return;
+      var yy = y(v);
+      ctx.setLineDash([5, 4]); ctx.strokeStyle = color; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke(); ctx.setLineDash([]); ctx.lineWidth = 1;
+      ctx.fillStyle = color; ctx.font = "10px ui-monospace,monospace"; ctx.textAlign = "right";
+      ctx.fillText(label + " " + v.toFixed(2), W - padR - 4, yy - 3);
     }
-    return (
-      '<div class="grid"><section class="card"><h3>Market Intelligence</h3><div class="tfGrid">' +
-      Object.keys(ph)
-        .map(function (k) {
-          var v = ph[k] || {};
-          var detail = providerDetail(v);
-          return (
-            '<div class="tfCard"><h5>' +
-            esc(v.label || k) +
-            "</h5><p>State: " +
-            esc(v.state || "unknown") +
-            (v.severity ? " · " + esc(v.severity) : "") +
-            "</p>" +
-            detail.map(function (x) { return "<p>" + esc(x) + "</p>"; }).join("") +
-            "<p>" +
-            esc(k) +
-            "</p></div>"
-          );
-        })
-        .join("") +
-      "</div></section>" +
-      marketLevels(d) +
-      lists(d) +
-      "</div>"
-    );
+    line(m.entry, "#f7c948", "ENTRY");
+    line(m.stop, "#ff5d77", "STOP");
+    line(m.target, "#1fd18a", "TARGET");
   }
 
-  function smartMoneyPanel(d) {
-    var sme = d.smart_money_summary || {};
-    var rows = sme.timeframes || [];
-    return (
-      '<section class="card wide"><h3>Smart Money Engine</h3><div class="body contextGrid"><div class="ctx"><span>State</span><b class="' +
-      (sme.state === "ready" ? "okText" : "amber") +
-      '">' +
-      esc(sme.state || "unknown") +
-      '</b></div><div class="ctx"><span>IFVG Reads</span><b>' +
-      esc(safe(sme.active_ifvg_reads, 0)) +
-      '</b></div><div class="ctx"><span>Aligned</span><b>' +
-      esc(safe(sme.aligned_count, 0)) +
-      "/" +
-      esc(safe(sme.required_aligned, 5)) +
-      '</b></div><div class="ctx"><span>HTF</span><b>' +
-      esc(safe(sme.htf_aligned, 0)) +
-      "/" +
-      esc(safe(sme.required_htf, 2)) +
-      '</b></div><div class="ctx"><span>Entry IFVG</span><b>' +
-      esc(sme.entry_confirmed ? "yes" : "no") +
-      '</b></div><div class="ctx"><span>Displacement</span><b>' +
-      esc(sme.entry_displacement ? "yes" : "no") +
-      '</b></div><div class="ctx"><span>Liquidity</span><b>' +
-      esc(sme.liquidity_confirmed ? "yes" : "no") +
-      "</b></div></div><div class=\"tfGrid\">" +
-      rows
-        .map(function (r) {
-          return (
-            '<div class="tfCard"><h5>' +
-            esc(r.timeframe || "TF") +
-            "</h5><p>Bias: " +
-            esc(r.bias || "unknown") +
-            "</p><p>IFVG: " +
-            esc(r.ifvg_side || "none") +
-            "</p><p>Displacement: " +
-            esc(r.displacement ? "yes" : "no") +
-            "</p><p>Liquidity: " +
-            esc(r.liquidity_sweep ? "yes" : "no") +
-            "</p></div>"
-          );
-        })
-        .join("") +
-      "</div></section>"
-    );
-  }
-
-  function signalPage(d) {
-    return (
-      '<div class="grid">' +
-      smartMoneyPanel(d) +
-      '<section class="card"><h3>Signal Engine</h3><div class="body" style="padding:18px"><h2>Alignment Audit</h2><pre class="json">' +
-      esc(JSON.stringify(d.alignment_audit || {}, null, 2)) +
-      "</pre></div></section>" +
-      lists(d) +
-      tfGrid(d) +
-      "</div>"
-    );
-  }
-
-  function riskPage(d) {
-    return (
-      '<div class="grid"><section class="card"><h3>Risk &amp; Orders</h3><div class="body contextGrid"><div class="ctx"><span>Live Orders</span><b class="amber">' +
-      esc(d.live_orders_enabled ? "open" : "locked") +
-      '</b></div><div class="ctx"><span>Trades Today</span><b>' +
-      esc(safe((d.daily_guard || {}).trades_taken, 0)) +
-      '</b></div><div class="ctx"><span>Losses Today</span><b>' +
-      esc(safe((d.daily_guard || {}).losses_taken, 0)) +
-      '</b></div><div class="ctx"><span>Open Positions</span><b>' +
-      esc(safe((d.daily_guard || {}).open_positions, 0)) +
-      '</b></div><div class="ctx"><span>Guard</span><b>' +
-      esc((d.daily_guard || {}).blocked ? "blocked" : "clear") +
-      "</b></div></div></section>" +
-      lists(d) +
-      "</div>"
-    );
-  }
-
-  function journalPage() {
-    var journal = state.journal || { rows: [] };
-    var rows = journal.rows || [];
-    return (
-      '<section class="card"><h3>Journal &amp; Evidence</h3><div class="tfGrid">' +
-      (rows.length
-        ? rows
-            .map(function (r) {
-              return (
-                '<div class="tfCard"><h5>' +
-                esc((r.timestamp_utc || "unknown").replace("+00:00", "Z")) +
-                "</h5><p>Action: " +
-                esc(r.action || "unknown") +
-                "</p><p>Score: " +
-                esc(safe(r.score, "—")) +
-                " · Grade " +
-                esc(safe(r.grade, "—")) +
-                "</p><p>Side: " +
-                esc(r.side || "none") +
-                "</p><p>Source: " +
-                esc(r.source || "snapshot") +
-                "</p></div>"
-              );
-            })
-            .join("")
-        : '<div class="tfCard"><h5>No Journal Rows</h5><p>decision snapshots unavailable</p></div>') +
-      "</div></section>"
-    );
-  }
-
-  function settingsPage(d) {
-    var health = state.health || d.provider_health_summary || {};
-    return (
-      '<div class="grid"><section class="card"><h3>Settings &amp; Health</h3><div class="tfGrid">' +
-      Object.keys(health)
-        .map(function (k) {
-          var h = health[k] || {};
-          return (
-            '<div class="tfCard"><h5>' +
-            esc(h.label || k) +
-            "</h5><p>State: " +
-            esc(h.state || "unknown") +
-            (h.severity ? " · " + esc(h.severity) : "") +
-            "</p><p>Configured: " +
-            esc(h.configured === undefined ? "—" : h.configured ? "yes" : "no") +
-            "</p><p>" +
-            esc(h.message || h.source || "") +
-            "</p></div>"
-          );
-        })
-        .join("") +
-      "</div></section>" +
-      lists(d) +
-      "</div>"
-    );
-  }
-
-  function bindUi(root) {
-    var refresh = root.querySelector("#gt-refresh");
-    if (refresh) refresh.addEventListener("click", load);
-    var navLinks = root.querySelectorAll("[data-page]");
-    for (var i = 0; i < navLinks.length; i++) {
-      navLinks[i].addEventListener("click", function (ev) {
-        ev.preventDefault();
-        nav(this.getAttribute("data-page"));
-      });
-    }
-    var tfBtns = root.querySelectorAll(".tfBtns button[data-tf]");
-    for (var j = 0; j < tfBtns.length; j++) {
-      tfBtns[j].addEventListener("click", function () {
-        var tf = this.getAttribute("data-tf");
-        state.tf = tf;
-        state.chartLoading = true;
-        render();
-        loadCandles(tf);
-      });
-    }
-  }
-
-  function render() {
-    var root = document.getElementById("root");
-    if (!root) return;
-    var d = state.decision || {};
-    var body = "";
-    if (state.loadError) {
-      body =
-        '<section class="card"><h3>Load error</h3><div class="body" style="padding:18px"><p class="danger">' +
-        esc(state.loadError) +
-        '</p><button type="button" class="chip ok" id="gt-retry">Retry</button></div></section>';
-    } else if (isNoValidState(d) && state.page !== "json") {
-      body = noValidStatePage(d);
-    } else if (state.page === "trade") body = tradePage(d);
-    else if (state.page === "market") body = marketPage(d);
-    else if (state.page === "signal") body = signalPage(d);
-    else if (state.page === "risk") body = riskPage(d);
-    else if (state.page === "journal") body = journalPage();
-    else if (state.page === "settings") body = settingsPage(d);
-    else if (state.page === "json")
-      body =
-        '<section class="card"><h3>Decision JSON</h3><pre class="json">' +
-        esc(JSON.stringify(d, null, 2)) +
-        "</pre></section>";
-    try {
-      root.innerHTML = '<div class="app">' + top(d) + body + "</main></div>";
-      bindUi(root);
-      var retry = root.querySelector("#gt-retry");
-      if (retry) retry.addEventListener("click", load);
-      drawSoon();
-    } catch (e) {
-      root.innerHTML =
-        '<div style="padding:40px;color:#ff5770;font-family:monospace">Render error: ' +
-        esc(String(e)) +
-        "</div>";
-    }
-  }
-
-  function boot() {
-    renderLoading();
-    load();
-    setInterval(load, 15000);
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
-  } else {
-    boot();
-  }
+  /* ---------- boot ---------- */
+  injectStyles();
+  load();
+  setInterval(load, REFRESH_MS);
 })();

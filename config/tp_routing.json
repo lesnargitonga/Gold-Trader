@@ -1,0 +1,27 @@
+{
+  "_doc": "Per-slice TP routing & paper eligibility. grade -> timeframe(min) -> route. Tune here, no code change. Backed by logs/ifvg_tp_structure_audit.json + logs/ifvg_htf_edge_audit.json (window 2026-04-17..2026-06-19). tp_model: runner_5r | structural | off. live_track=true means the slice counts toward the 20-trade live go/no-go (Grade A only). Everything is PAPER while live orders are locked.",
+  "default_risk_usd": 30.0,
+  "runner_r_multiple": 5.0,
+  "routes": {
+    "A": {
+      "15": {"eligible": true,  "tp_model": "runner_5r", "live_track": true,  "note": "Grade A — 5R runner (15m not in 63-day HTF audit; allowed per operator, watch n)"},
+      "60": {"eligible": true,  "tp_model": "runner_5r", "live_track": true,  "note": "Grade A 1H — 5R runner (audit: 22.6% hit, PF 1.46, +22R, n=65)"},
+      "240": {"eligible": true, "tp_model": "runner_5r", "live_track": true,  "note": "Grade A 4H — 5R runner (audit n thin, n=3; collect forward)"}
+    },
+    "B": {
+      "15": {"eligible": false, "tp_model": "off",       "live_track": false, "note": "Grade B blocked on 15m (audit: B nearest-zone/1H negative)"},
+      "60": {"eligible": false, "tp_model": "off",       "live_track": false, "note": "Grade B blocked on 1H (audit: B-1H 5R PF 0.83, -14R)"},
+      "240": {"eligible": true, "tp_model": "runner_5r", "live_track": false, "note": "Grade B 4H — 5R runner, PAPER ONLY, never counts toward live (audit: PF 1.50, n=39 single window)"}
+    },
+    "C": {
+      "15": {"eligible": false, "tp_model": "off", "live_track": false, "note": "Grade C watch only"},
+      "60": {"eligible": false, "tp_model": "off", "live_track": false, "note": "Grade C watch only"},
+      "240": {"eligible": false, "tp_model": "off", "live_track": false, "note": "Grade C watch only"}
+    },
+    "D": {
+      "15": {"eligible": false, "tp_model": "off", "live_track": false, "note": "Grade D avoid"},
+      "60": {"eligible": false, "tp_model": "off", "live_track": false, "note": "Grade D avoid"},
+      "240": {"eligible": false, "tp_model": "off", "live_track": false, "note": "Grade D avoid"}
+    }
+  }
+}

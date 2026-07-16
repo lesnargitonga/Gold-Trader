@@ -195,10 +195,26 @@ def fetch_candles_from_mt5_bridge(
       {"time": "...", "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 123}
     ]
     """
+    def _tf_to_minutes(tf: str | int) -> int:
+        try:
+            if isinstance(tf, int):
+                return int(tf)
+            s = str(tf).upper().strip()
+            if s.startswith("M") and s[1:].isdigit():
+                return int(s[1:])
+            if s.startswith("H") and s[1:].isdigit():
+                return int(s[1:]) * 60
+            if s.startswith("D") and s[1:].isdigit():
+                return int(s[1:]) * 1440
+            return int(s)
+        except Exception:
+            return 15
+
+    tf_minutes = _tf_to_minutes(timeframe)
     query = urllib.parse.urlencode(
         {
             "symbol": symbol,
-            "timeframe": timeframe,
+            "timeframe": tf_minutes,
             "limit": limit,
         }
     )
