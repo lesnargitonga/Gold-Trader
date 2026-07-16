@@ -1,0 +1,12 @@
+# Tuned gitleaks config for Gold-Trader.
+# config/probability_tables/*.json hold high-entropy NUMERIC trading tables that
+# gitleaks' generic-api-key rule flags as secrets. They contain no credentials.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Numeric probability/config tables are not secrets"
+paths = [
+  '''config/probability_tables/.*\.json''',
+  '''config/runtime_config\.json''',
+]
